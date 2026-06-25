@@ -6,21 +6,46 @@
 
 说明：
 
-- `[x]` 通过
-- `[!]` 有问题
+- `[●]` 通过
+- `[！]` 有问题
+- `[×]` 未通过
 - `[ ]` 未检查
 - 任意第 1–6 项失败，不建议自动发送当日简报。
 
 ## 快速检查（12 项）
 
-- [ ] **1. 程序状态正常**  
+- [●] **1. 程序状态正常**  
   `python -m newsagent doctor` 可以正常执行，数据库、Ollama 和邮件状态符合预期。
+      "sources": 36,
+    "enabled_sources": 28,
+    "llm_provider": "ollama",
+    "llm_model": "qwen3:8b",
+    "ollama_available": true,
+    "email_enabled": true,
+    "email_configured": true
 
-- [ ] **2. 新闻采集正常**  
+- [！] **2. 新闻采集正常**  
   运行 `python -m newsagent collect --limit 3` 后，有新数据或明确显示“没有新数据”，且失败来源不会中断整个任务。
+    访问所有启用的信息源。
+    每个来源最多获取 3 条。
+    保存新内容到 data/newsagent.db。
+    对内容进行初步去重和聚类。
+    输出类似结果：
+    {
+    "inserted": 81,
+    "clustered": 7,
+    "errors": [
+      {
+        "source": "npj_digital_medicine",
+        "error": "not well-formed (invalid token): line 14, column 4"
+      }
+    ]
+  }
 
-- [ ] **3. 简报能够生成**  
+- [！] **3. 简报能够生成**  
   `python -m newsagent daily --output-language zh --collect-limit 3 --brief-limit 20` 可以成功生成 Rules 和 LLM 两版文件。
+    
+
 
 - [ ] **4. 没有乱码**  
   中文、英文、日文、URL 和数字均正常显示，没有明显乱码或损坏字符。

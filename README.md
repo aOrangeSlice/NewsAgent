@@ -31,7 +31,7 @@ python -m newsagent doctor
 python -m newsagent init-db
 python -m newsagent collect --limit 30
 python -m newsagent brief --output-language zh
-python -m newsagent ask "最近 AI 基础设施有什么重要新闻？" --language zh
+python -m newsagent ask "AIインフラに関する最新の重要なニュースは何ですか？" --language ja
 ```
 
 Data is stored in `data/newsagent.db`.
@@ -52,9 +52,11 @@ Each run saves two editions built from the same selected stories:
 - `rules`: deterministic edition, equivalent to `use_llm: false`.
 - `llm`: LLM-written edition, equivalent to `use_llm: true`.
 
-The `briefing.use_llm` setting chooses which edition is printed, written to
-`latest.md`, and sent by email. It does not disable generation of the other
-edition. Both editions are saved in SQLite. Daily runs also write
+The `briefing.use_llm` setting chooses which edition is printed and written to
+`latest.md`. It does not disable generation of the other edition. When a daily
+run uses `--email`, `use_llm: true` sends two separately labeled messages
+(`[Rules]` and `[LLM]`), while `use_llm: false` sends only the rules edition.
+Both editions are saved in SQLite. Daily runs also write
 `latest_rules.md` and `latest_llm.md`. If the selected output language is not
 `original`, final translation still uses the configured LLM for both editions.
 Long briefs are translated in Markdown-aware chunks. Story IDs and URLs are

@@ -168,8 +168,45 @@ class NewsAgentApp:
             )
         path = outbox / f"briefing_{briefing_id}_{preferred['mode']}.md"
         (outbox / "latest.md").write_text(body, encoding="utf-8")
-        email_result = self.send_email(body, briefing_id=briefing_id) if email else None
+        email_result = (
+            self._send_daily_email_variants(
+                variants,
+                use_llm=bool(briefing_settings.get("use_llm", True)),
+            )
+            if email
+            else None
+        )
         return briefing_id, body, collect_result, path, email_result
+
+    def _send_daily_email_variants(
+        self,
+        variants: list[dict[str, Any]],
+        use_llm: bool,
+    ) -> dict[str, Any]:
+        modes_to_send = {"rules", "llm"} if use_llm else {"rules"}
+        deliveries = []
+        for variant in variants:
+            mode = variant["mode"]
+            if mode not in modes_to_send:
+                continue
+            label = "LLM" if mode == "llm" else "Rules"
+            result = self.send_email(
+                variant["body"],
+                briefing_id=variant["id"],
+                subject=f"NewsAgent Daily Brief [{label}] #{variant['id']}",
+            )
+            deliveries.append(
+                {
+                    "mode": mode,
+                    "briefing_id": variant["id"],
+                    "generation_status": variant["generation_status"],
+                    **result,
+                }
+            )
+        return {
+            "ok": bool(deliveries) and all(item.get("ok", False) for item in deliveries),
+            "deliveries": deliveries,
+        }
 
     def _select_stories(self, max_stories: int) -> list[dict[str, Any]]:
         briefing_settings = self.settings.get("briefing", {})
