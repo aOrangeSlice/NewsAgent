@@ -1,0 +1,55 @@
+{
+  "user": {
+    "default_language": "zh",
+    "timezone": "Asia/Tokyo",
+    "push_time": "08:00"
+  },
+  "database": {
+    "path": "data/newsagent.db"
+  },
+  "llm": {
+    "mode": "local_first",
+    "provider": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "qwen3:8b",
+    "temperature": 0.2,
+    "num_ctx": 8192,
+    "cloud_fallback_enabled": false
+  },
+  "collection": {
+    "per_source_limit": 40
+  },
+  "briefing": {
+    "max_stories": 65,
+    "min_stories": 8,
+    "use_llm": false,
+    "lookback_hours": 48
+  },
+  "translation": {
+    "enabled": true,
+    "max_chunk_chars": 4500
+  },
+  "delivery": {
+    "email": {
+      "enabled": false,
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "use_tls": true,
+      "username": "",
+      "password": "",
+      "password_env": "NEWSAGENT_SMTP_PASSWORD",
+      "sender": "",
+      "recipients": [
+        "you@example.com"
+      ]
+    }
+  },
+  "retention": {
+    "raw_item_retention_days": 90,
+    "story_retention_days": 1095,
+    "briefing_retention_days": 1825,
+    "market_snapshot_retention_days": 1095,
+    "delivery_log_retention_days": 90,
+    "llm_run_retention_days": 30
+  }
+}

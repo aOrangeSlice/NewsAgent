@@ -1,0 +1,50 @@
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+config/settings.json
+config/settings.local.json
+
+# Runtime data and generated briefings
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and packaging output
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Test and temporary files
+tests/tmp*/
+tmp/
+temp/
+*.tmp
+*.log
+
+# Local editor, OS, and Codex/agent metadata
+.vscode/
+.idea/
+.agents/
+.codex/
+.DS_Store
+Thumbs.db
+desktop.ini
