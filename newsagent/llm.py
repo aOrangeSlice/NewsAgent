@@ -61,6 +61,29 @@ GLOBAL_INDEX_SYMBOLS = {
 
 US_SECTOR_SYMBOLS = {"XLK", "XLF", "XLV", "XLE", "XLI", "XLY"}
 
+COMMODITY_FX_SYMBOLS = {
+    "CL=F",
+    "BZ=F",
+    "JPY=X",
+    "JPYUSD=X",
+    "GBPUSD=X",
+    "CNY=X",
+    "CNYUSD=X",
+    "CNYJPY=X",
+    "JPYCNY=X",
+}
+
+MARKET_REGION_ORDER = ["japan", "china", "hong_kong_china", "europe", "india", "other"]
+
+MARKET_REGION_LABELS_EN = {
+    "japan": "Japan",
+    "china": "China A-shares",
+    "hong_kong_china": "Hong Kong / China",
+    "europe": "Europe",
+    "india": "India",
+    "other": "Other markets",
+}
+
 
 class OllamaClient:
     def __init__(self, base_url: str, model: str, temperature: float = 0.2, num_ctx: int = 8192):
@@ -165,9 +188,13 @@ class Summarizer:
             prompt = build_briefing_prompt(stories, "original")
             try:
                 result = self.ollama.generate(prompt)
+                cleaned = enforce_deterministic_market_section(
+                    clean_model_output(result),
+                    stories,
+                )
                 if self.db:
                     self.db.log_llm_run(self.provider, self.model, True)
-                return clean_model_output(result), "generated"
+                return cleaned, "generated"
             except Exception as exc:
                 if self.db:
                     self.db.log_llm_run(self.provider, self.model, False, str(exc))
@@ -226,17 +253,87 @@ class Summarizer:
         return "\n\n".join(translated_chunks).strip()
 
     def answer_question(self, question: str, stories: list[dict[str, Any]], language: str = "zh") -> str:
+        language = normalize_output_language(language)
+        fallback_reason = "llm_unavailable"
         if self.ollama.available():
+            fallback_reason = "answer_validation_failed"
             prompt = build_answer_prompt(question, stories, language)
             try:
                 result = self.ollama.generate(prompt)
                 if self.db:
                     self.db.log_llm_run(self.provider, self.model, True)
-                return clean_model_output(result)
+                cleaned = clean_model_output(result)
+                if answer_matches_language(cleaned, language) and answer_cites_known_sources(cleaned, stories):
+                    return cleaned
+                self.log_answer_validation_failure("answer", cleaned, language, stories)
+                rewritten = self.rewrite_answer_language(cleaned, language)
+                if answer_matches_language(rewritten, language) and answer_cites_known_sources(rewritten, stories):
+                    return rewritten
+                self.log_answer_validation_failure("answer language rewrite", rewritten, language, stories)
+                regenerated = self.regenerate_answer_from_evidence(question, stories, language)
+                if answer_matches_language(regenerated, language) and answer_cites_known_sources(regenerated, stories):
+                    return regenerated
+                self.log_answer_validation_failure("answer regeneration", regenerated, language, stories)
             except Exception as exc:
+                fallback_reason = "llm_unavailable"
                 if self.db:
                     self.db.log_llm_run(self.provider, self.model, False, str(exc))
-        return fallback_answer(question, stories, language)
+        return fallback_answer(question, stories, language, reason=fallback_reason)
+
+    def log_answer_validation_failure(
+        self,
+        stage: str,
+        text: str,
+        language: str,
+        stories: list[dict[str, Any]],
+    ) -> None:
+        if not self.db:
+            return
+        reasons = []
+        if not answer_matches_language(text, language):
+            reasons.append("language")
+        if not answer_cites_known_sources(text, stories):
+            reasons.append("source")
+        if not (text or "").strip():
+            reasons.append("empty")
+        reason_text = ",".join(reasons) or "unknown"
+        self.db.log_llm_run(
+            self.provider,
+            self.model,
+            False,
+            f"answer validation failed: stage={stage}; reason={reason_text}; target_language={language}",
+        )
+
+    def rewrite_answer_language(self, answer: str, language: str) -> str:
+        language = normalize_output_language(language)
+        if language == "original":
+            return answer
+        try:
+            result = self.ollama.generate(build_answer_rewrite_prompt(answer, language))
+            if self.db:
+                self.db.log_llm_run(self.provider, self.model, True)
+            return clean_model_output(result)
+        except Exception as exc:
+            if self.db:
+                self.db.log_llm_run(self.provider, self.model, False, f"answer language rewrite: {exc}")
+            return answer
+
+    def regenerate_answer_from_evidence(
+        self,
+        question: str,
+        stories: list[dict[str, Any]],
+        language: str,
+    ) -> str:
+        language = normalize_output_language(language)
+        try:
+            result = self.ollama.generate(build_answer_regeneration_prompt(question, stories, language))
+            if self.db:
+                self.db.log_llm_run(self.provider, self.model, True)
+            return clean_model_output(result)
+        except Exception as exc:
+            if self.db:
+                self.db.log_llm_run(self.provider, self.model, False, f"answer regeneration: {exc}")
+            return ""
 
 
 def build_briefing_prompt(stories: list[dict[str, Any]], language: str) -> str:
@@ -252,7 +349,9 @@ def build_briefing_prompt(stories: list[dict[str, Any]], language: str) -> str:
 You are NewsAgent, a local-first intelligence briefing assistant.
 {language_instruction}
 Use only the evidence JSON. Every factual bullet must cite a source URL.
-Group market data into global indices, US sectors, and commodities/FX.
+Group market data into global indices, US sectors, international sectors by region, and commodities/FX.
+For global indices, include all available items from the configured major index universe, up to 10.
+Do not place equity sector ETFs or sector indices in commodities/FX.
 Group mainstream media by region and list up to 5 important stories per region.
 Always include a medical/health section with 5 high-signal items when available; if evidence is sparse, write watch items instead of saying there is no evidence.
 
@@ -388,6 +487,46 @@ def validate_translation(source: str, translated: str) -> bool:
     return True
 
 
+def answer_cites_known_sources(text: str, stories: list[dict[str, Any]]) -> bool:
+    known_urls = {
+        normalize_cited_url(url)
+        for story in stories
+        for url in story.get("source_urls", [])
+        if url
+    }
+    if not known_urls:
+        return True
+    cited_urls = {normalize_cited_url(url) for url in re.findall(r"https?://[^\s)>]+", text or "")}
+    return bool(cited_urls) and cited_urls.issubset(known_urls)
+
+
+def normalize_cited_url(url: str) -> str:
+    return (url or "").rstrip(".,;:!?)）】」'")
+
+
+def answer_matches_language(text: str, language: str) -> bool:
+    language = normalize_output_language(language)
+    if language == "original":
+        return True
+    sample = strip_language_neutral_text(text)
+    if language == "ja":
+        return bool(re.search(r"[\u3040-\u30ff]", sample))
+    if language == "zh":
+        return bool(re.search(r"[\u3400-\u9fff]", sample)) and not bool(re.search(r"[\u3040-\u30ff]", sample))
+    if language == "en":
+        latin = len(re.findall(r"[A-Za-z]", sample))
+        cjk = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", sample))
+        return latin > 0 and latin >= cjk
+    return False
+
+
+def strip_language_neutral_text(text: str) -> str:
+    text = re.sub(r"https?://\S+", " ", text or "")
+    text = re.sub(r"`[^`]*`", " ", text)
+    text = re.sub(r"\[[0-9]+\]", " ", text)
+    return text
+
+
 def localize_briefing_structure(markdown: str, language: str) -> str:
     replacements = {
         "zh": {
@@ -395,6 +534,7 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "## Market overview: global indices and sectors": "## 市场先看：全球指数与板块",
             "### Global indices": "### 全球主要指数",
             "### U.S. sectors": "### 美股行业板块",
+            "### International sectors by region": "### 国际行业板块（按地区）",
             "### Commodities and FX": "### 商品与外汇",
             "## Important mainstream news by region — Top 5": "## 各地区主流媒体重要新闻 Top 5",
             "## Medical and health — Top 5": "## 医疗与健康资讯 Top 5",
@@ -406,6 +546,12 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "### United States": "### 美国",
             "### Japan": "### 日本",
             "### South Korea": "### 韩国",
+            "#### Japan": "#### 日本",
+            "#### China A-shares": "#### 中国A股",
+            "#### Hong Kong / China": "#### 香港/中国",
+            "#### Europe": "#### 欧洲",
+            "#### India": "#### 印度",
+            "#### Other markets": "#### 其他市场",
             "Source:": "来源：",
         },
         "ja": {
@@ -413,6 +559,7 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "## Market overview: global indices and sectors": "## 市場概況：世界の指数とセクター",
             "### Global indices": "### 世界の主要指数",
             "### U.S. sectors": "### 米国株セクター",
+            "### International sectors by region": "### 地域別の国際セクター",
             "### Commodities and FX": "### 商品・為替",
             "## Important mainstream news by region — Top 5": "## 地域別の主要ニュース Top 5",
             "## Medical and health — Top 5": "## 医療・ヘルスケア Top 5",
@@ -424,6 +571,12 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "### United States": "### 米国",
             "### Japan": "### 日本",
             "### South Korea": "### 韓国",
+            "#### Japan": "#### 日本",
+            "#### China A-shares": "#### 中国A株",
+            "#### Hong Kong / China": "#### 香港/中国",
+            "#### Europe": "#### 欧州",
+            "#### India": "#### インド",
+            "#### Other markets": "#### その他市場",
             "Source:": "情報源：",
         },
     }
@@ -442,22 +595,78 @@ def translation_fallback_warning(language: str) -> str:
 
 
 def build_answer_prompt(question: str, stories: list[dict[str, Any]], language: str) -> str:
+    language = normalize_output_language(language)
+    if language == "original":
+        language_instruction = (
+            "Answer in the same language as the user's question. "
+            "Preserve story titles and summaries in their source languages when citing evidence."
+        )
+    else:
+        language_instruction = (
+            f"Answer in {LANGUAGE_NAMES[language]} only. "
+            "Do not switch to another language unless it is part of a source title, organization name, or URL."
+        )
     evidence = json.dumps(stories, ensure_ascii=False, indent=2)[:26000]
     return f"""
 /no_think
 You are NewsAgent, a local-first evidence-based news analyst.
-Answer in language: {language}.
+{language_instruction}
 Question: {question}
 
 Rules:
 - Use only the evidence JSON.
 - Separate facts, interpretation, and uncertainty.
-- Cite source URLs.
+- Cite source URLs by copying URLs exactly from each story's source_urls field.
+- Do not invent or infer URLs.
 - If the evidence is insufficient, say exactly what is missing.
 - Keep the answer concise but useful.
 
 Evidence JSON:
 {evidence}
+""".strip()
+
+
+def build_answer_regeneration_prompt(question: str, stories: list[dict[str, Any]], language: str) -> str:
+    language = normalize_output_language(language)
+    target = "the same language as the user's question" if language == "original" else LANGUAGE_NAMES[language]
+    evidence = json.dumps(stories, ensure_ascii=False, indent=2)[:26000]
+    return f"""
+/no_think
+You are NewsAgent. Regenerate a validated answer from local evidence only.
+
+Target language: {target}
+Question: {question}
+
+Hard rules:
+- Return only the final answer.
+- Use only facts present in the evidence JSON.
+- Copy citation URLs exactly from story.source_urls; do not use URLs found inside summaries unless they are also in source_urls.
+- Every factual bullet must include one copied source URL.
+- Do not invent company partnerships, dates, chip names, blog URLs, or source names.
+- If evidence is thin, say what is thin, then list the most relevant local evidence.
+- Keep story titles and proper nouns unchanged when needed.
+
+Evidence JSON:
+{evidence}
+""".strip()
+
+
+def build_answer_rewrite_prompt(answer: str, language: str) -> str:
+    language = normalize_output_language(language)
+    target = LANGUAGE_NAMES[language]
+    return f"""
+/no_think
+Rewrite the following answer into {target} only.
+
+Rules:
+- Return only the rewritten answer.
+- Preserve Markdown structure.
+- Preserve story IDs, URLs, stock symbols, numbers, and organization/product names.
+- Do not add new facts.
+- Do not leave Chinese or English explanatory prose unless it is part of a proper noun or source title.
+
+Answer:
+{answer}
 """.strip()
 
 
@@ -686,6 +895,7 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
     lines.extend(["", "## Market overview: global indices and sectors" if original else "## 市场先看：全球指数与板块"])
     render_market_group(lines, "Global indices" if original else "全球主要指数", market_groups["global_indices"], original)
     render_market_group(lines, "U.S. sectors" if original else "美股行业板块", market_groups["us_sectors"], original)
+    render_market_region_groups(lines, market_groups["international_sectors"], original)
     render_market_group(lines, "Commodities and FX" if original else "商品与外汇", market_groups["commodities_fx"], original)
 
     lines.extend(["", "## Important mainstream news by region — Top 5" if original else "## 各地区主流媒体重要新闻 Top 5"])
@@ -739,16 +949,57 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
     return "\n".join(lines)
 
 
-def fallback_answer(question: str, stories: list[dict[str, Any]], language: str) -> str:
+def fallback_answer(
+    question: str,
+    stories: list[dict[str, Any]],
+    language: str,
+    reason: str = "llm_unavailable",
+) -> str:
+    language = normalize_output_language(language)
+    labels = {
+        "zh": {
+            "no_stories": "当前没有找到相关本地记录。可以先运行 `python -m newsagent collect` 更新数据，再重新提问。",
+            "question": "问题",
+            "intro": "基于当前本地数据库，可参考：",
+            "note": "说明：这是安全降级回答，只做证据列举，不做额外推断。",
+            "validation": "原因：LLM 输出没有通过语言或来源校验。",
+            "unavailable": "原因：LLM 不可用或生成失败。",
+        },
+        "en": {
+            "no_stories": "No relevant local records were found. Run `python -m newsagent collect` first, then ask again.",
+            "question": "Question",
+            "intro": "Based on the current local database, these items may be relevant:",
+            "note": "Note: this is a safe fallback answer; it lists evidence only and does not add extra interpretation.",
+            "validation": "Reason: the LLM output did not pass language or source validation.",
+            "unavailable": "Reason: the LLM was unavailable or generation failed.",
+        },
+        "ja": {
+            "no_stories": "関連するローカル記録が見つかりませんでした。先に `python -m newsagent collect` を実行してデータを更新してから、もう一度質問してください。",
+            "question": "質問",
+            "intro": "現在のローカルデータベースでは、次の項目を参考にできます：",
+            "note": "注：これは安全なフォールバック回答です。根拠の列挙のみを行い、追加の推論は行いません。",
+            "validation": "理由：LLM 出力が言語または情報源の検証を通過しませんでした。",
+            "unavailable": "理由：LLM が利用できない、または生成に失敗しました。",
+        },
+        "original": {
+            "no_stories": "No relevant local records were found. Run `python -m newsagent collect` first, then ask again.",
+            "question": "Question",
+            "intro": "Based on the current local database, these items may be relevant:",
+            "note": "Note: this is a safe fallback answer; it lists evidence only and does not add extra interpretation.",
+            "validation": "Reason: the LLM output did not pass language or source validation.",
+            "unavailable": "Reason: the LLM was unavailable or generation failed.",
+        },
+    }[language]
     if not stories:
-        return "当前没有找到相关本地记录。可以先运行 `python -m newsagent collect` 更新数据，再重新提问。"
-    lines = [f"问题：{question}", "", "基于当前本地数据库，可参考："]
+        return labels["no_stories"]
+    lines = [f"{labels['question']}：{question}", "", labels["intro"]]
     for story in stories[:8]:
         source = first_source(story)
         summary = f" - {story['summary']}" if story.get("summary") else ""
         lines.append(f"- [{story['id']}] {story['title']}{summary} ({source})")
     lines.append("")
-    lines.append("说明：这是无 LLM 或 LLM 失败时的降级回答，只做证据列举，不做额外推断。")
+    lines.append(labels["note"])
+    lines.append(labels["validation"] if reason == "answer_validation_failed" else labels["unavailable"])
     return "\n".join(lines)
 
 
@@ -766,17 +1017,107 @@ def render_market_group(
         lines.append(f"- [{story['id']}] {story['title']} {source_label} {first_source(story)}")
 
 
+def enforce_deterministic_market_section(markdown: str, stories: list[dict[str, Any]]) -> str:
+    if not any(story.get("category") == "market" for story in stories):
+        return markdown
+
+    section = render_market_overview_section(stories)
+    pattern = re.compile(
+        r"^## Market overview: global indices and sectors\s*.*?(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    if pattern.search(markdown):
+        return pattern.sub(f"{section}\n\n", markdown, count=1).strip()
+
+    lines = markdown.strip().splitlines()
+    if lines and lines[0].startswith("# "):
+        return "\n".join([lines[0], "", section, "", *lines[1:]]).strip()
+    return f"{section}\n\n{markdown.strip()}".strip()
+
+
+def render_market_overview_section(stories: list[dict[str, Any]]) -> str:
+    market = sorted(
+        unique_by_source([s for s in stories if s.get("category") == "market"]),
+        key=lambda story: abs(extract_change_pct(story.get("title", ""))),
+        reverse=True,
+    )
+    market_groups = group_market_stories(market)
+
+    lines = ["## Market overview: global indices and sectors"]
+    render_market_group(lines, "Global indices", market_groups["global_indices"][:10], original=True)
+    render_market_group(lines, "U.S. sectors", market_groups["us_sectors"], original=True)
+    render_market_region_groups(lines, market_groups["international_sectors"], original=True)
+    render_market_group(lines, "Commodities and FX", market_groups["commodities_fx"], original=True)
+    return "\n".join(lines).strip()
+
+
+def render_market_region_groups(
+    lines: list[str],
+    region_groups: dict[str, list[dict[str, Any]]],
+    original: bool = False,
+) -> None:
+    if not any(region_groups.values()):
+        return
+    lines.extend(["", "### International sectors by region" if original else "### 国际行业板块（按地区）"])
+    for region in MARKET_REGION_ORDER:
+        stories = region_groups.get(region, [])
+        if not stories:
+            continue
+        heading = MARKET_REGION_LABELS_EN[region] if original else market_region_label_zh(region)
+        lines.extend(["", f"#### {heading}"])
+        for story in stories:
+            source_label = "Source:" if original else "来源："
+            lines.append(f"- [{story['id']}] {story['title']} {source_label} {first_source(story)}")
+
+
 def group_market_stories(stories: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    groups = {"global_indices": [], "us_sectors": [], "commodities_fx": []}
+    groups = {
+        "global_indices": [],
+        "us_sectors": [],
+        "international_sectors": {region: [] for region in MARKET_REGION_ORDER},
+        "commodities_fx": [],
+    }
     for story in stories:
         symbol = extract_symbol(first_source(story))
         if symbol in GLOBAL_INDEX_SYMBOLS:
             groups["global_indices"].append(story)
         elif symbol in US_SECTOR_SYMBOLS:
             groups["us_sectors"].append(story)
-        else:
+        elif symbol in COMMODITY_FX_SYMBOLS:
             groups["commodities_fx"].append(story)
+        else:
+            groups["international_sectors"][market_region_key(story, symbol)].append(story)
     return groups
+
+
+def market_region_key(story: dict[str, Any], symbol: str) -> str:
+    source_id = str(story.get("source_id") or "").lower()
+    subcategory = str(story.get("subcategory") or "").lower()
+    title = str(story.get("title") or "").lower()
+    region = str(story.get("region") or "").lower()
+    text = f"{source_id} {subcategory} {title}"
+    if symbol.endswith(".T") or region == "japan" or "japan" in text:
+        return "japan"
+    if symbol.endswith(".HK") or "hong kong" in text or "hang seng" in text:
+        return "hong_kong_china"
+    if symbol.endswith(".SS") or "a-share" in text or "a_share" in text:
+        return "china"
+    if symbol.endswith(".DE") or region == "europe" or "europe" in text:
+        return "europe"
+    if symbol.startswith("^CNX") or symbol == "^NSEBANK" or region == "india" or "india" in text:
+        return "india"
+    return "other"
+
+
+def market_region_label_zh(region: str) -> str:
+    return {
+        "japan": "日本",
+        "china": "中国A股",
+        "hong_kong_china": "香港/中国",
+        "europe": "欧洲",
+        "india": "印度",
+        "other": "其他市场",
+    }.get(region, region)
 
 
 def select_medical_stories(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:

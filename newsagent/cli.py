@@ -3,8 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from uuid import uuid4
 
+from .models import tokyo_now_iso
 from .pipeline import NewsAgentApp
+
+
+def emit_log(level: str, event: str, **fields) -> dict[str, object]:
+    record = {
+        "ts": tokyo_now_iso(),
+        "level": level,
+        "event": event,
+        **fields,
+    }
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+    return record
+
+
+def emit_pipeline_log(app: NewsAgentApp, pipeline_run_id: str, level: str, event: str, **fields) -> None:
+    payload = dict(fields)
+    payload["run_id"] = pipeline_run_id
+    record = emit_log(level, event, **payload)
+    app.db.log_pipeline_event(pipeline_run_id, level, event, record)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -51,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
 
     ask_p = sub.add_parser("ask", help="Ask a question against local collected stories.")
     ask_p.add_argument("question")
-    ask_p.add_argument("--language", default="zh")
+    ask_p.add_argument("--language", choices=["original", "zh", "en", "ja"], default="zh")
     ask_p.add_argument("--limit", type=int, default=12)
 
     fb_p = sub.add_parser("feedback", help="Record feedback for a story.")
@@ -77,17 +97,61 @@ def main(argv: list[str] | None = None) -> None:
             print(f"Briefing #{briefing_id}\n")
             print(body)
         elif args.command == "daily":
-            briefing_id, body, collect_result, path, email_result = app.daily(
+            run_id = uuid4().hex
+            emit_pipeline_log(
+                app,
+                run_id,
+                "INFO",
+                "run_started",
+                command="daily",
                 output_language=args.output_language,
                 collect_limit=args.collect_limit,
                 brief_limit=args.brief_limit,
                 email=args.email,
             )
-            print(json.dumps(collect_result, indent=2, ensure_ascii=False))
-            print(f"\nBriefing #{briefing_id} written to {path}\n")
+            try:
+                briefing_id, _body, collect_result, path, email_result = app.daily(
+                    output_language=args.output_language,
+                    collect_limit=args.collect_limit,
+                    brief_limit=args.brief_limit,
+                    email=args.email,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                emit_pipeline_log(app, run_id, "ERROR", "run_failed", error=str(exc))
+                raise
+
+            summary = getattr(app, "last_daily_summary", {})
+            collect_summary = summary.get("collect", collect_result)
+            briefing_summary = summary.get("briefing", {})
+            emit_pipeline_log(app, run_id, "INFO", "collect_finished", **collect_summary)
+            for source_error in collect_summary.get("errors", []):
+                emit_pipeline_log(app, run_id, "WARNING", "source_failed", **source_error)
+            if (
+                briefing_summary.get("min_stories", 0)
+                and briefing_summary.get("story_count", 0) < briefing_summary.get("min_stories", 0)
+            ):
+                emit_pipeline_log(
+                    app,
+                    run_id,
+                    "WARNING",
+                    "briefing_below_min_stories",
+                    story_count=briefing_summary.get("story_count", 0),
+                    min_stories=briefing_summary.get("min_stories", 0),
+                )
+            emit_pipeline_log(app, run_id, "INFO", "briefing_created", **briefing_summary)
             if email_result is not None:
-                print(json.dumps({"email": email_result}, indent=2, ensure_ascii=False))
-            print(body)
+                email_level = "INFO" if email_result.get("ok") else "ERROR"
+                emit_pipeline_log(app, run_id, email_level, "email_finished", **email_result)
+            emit_pipeline_log(
+                app,
+                run_id,
+                "INFO",
+                "run_finished",
+                briefing_id=briefing_id,
+                outbox_path=str(path),
+                exit_code=0,
+            )
         elif args.command == "send-latest":
             from pathlib import Path
 

@@ -47,6 +47,30 @@ class CollectionStatsTests(unittest.TestCase):
             db.close()
             self.remove_db_files(path)
 
+    def test_pipeline_event_is_logged_by_run_id(self):
+        path = self.make_db_path()
+        db = Database(path)
+        try:
+            db.init()
+            db.log_pipeline_event(
+                "run-123",
+                "WARNING",
+                "source_failed",
+                {"run_id": "run-123", "source": "nature_medicine"},
+            )
+            row = db.conn.execute(
+                "SELECT run_id, level, event, message_json, created_at FROM pipeline_logs"
+            ).fetchone()
+        finally:
+            db.close()
+            self.remove_db_files(path)
+
+        self.assertEqual(row["run_id"], "run-123")
+        self.assertEqual(row["level"], "WARNING")
+        self.assertEqual(row["event"], "source_failed")
+        self.assertIn("nature_medicine", row["message_json"])
+        self.assertTrue(row["created_at"].endswith("+09:00"))
+
     @patch("newsagent.pipeline.build_collector", return_value=FakeCollector())
     def test_collect_separates_fetched_inserted_and_existing(self, _build_collector):
         path = self.make_db_path()
@@ -64,15 +88,47 @@ class CollectionStatsTests(unittest.TestCase):
         try:
             app.db.init()
             result = app.collect(limit=3)
+            source_log = app.db.conn.execute(
+                """
+                SELECT run_id, source_id, source_name, status, fetched, inserted, existing,
+                       error, started_at, finished_at, created_at
+                FROM source_collection_logs
+                """
+            ).fetchone()
         finally:
             app.db.close()
             self.remove_db_files(path)
 
+        self.assertTrue(result["run_id"])
         self.assertEqual(result["fetched"], 2)
         self.assertEqual(result["inserted"], 1)
         self.assertEqual(result["existing"], 1)
         self.assertEqual(result["clustered"], 1)
         self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            result["sources"],
+            [
+                {
+                    "source": "test_source",
+                    "source_name": "Test Source",
+                    "status": "success",
+                    "fetched": 2,
+                    "inserted": 1,
+                    "existing": 1,
+                }
+            ],
+        )
+        self.assertEqual(source_log["run_id"], result["run_id"])
+        self.assertEqual(source_log["source_id"], "test_source")
+        self.assertEqual(source_log["source_name"], "Test Source")
+        self.assertEqual(source_log["status"], "success")
+        self.assertEqual(source_log["fetched"], 2)
+        self.assertEqual(source_log["inserted"], 1)
+        self.assertEqual(source_log["existing"], 1)
+        self.assertEqual(source_log["error"], "")
+        self.assertTrue(source_log["started_at"].endswith("+09:00"))
+        self.assertTrue(source_log["finished_at"].endswith("+09:00"))
+        self.assertTrue(source_log["created_at"].endswith("+09:00"))
 
 
 if __name__ == "__main__":

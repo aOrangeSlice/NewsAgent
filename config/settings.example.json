@@ -50,6 +50,8 @@
     "briefing_retention_days": 1825,
     "market_snapshot_retention_days": 1095,
     "delivery_log_retention_days": 90,
+    "pipeline_log_retention_days": 90,
+    "source_collection_log_retention_days": 90,
     "llm_run_retention_days": 30
   }
 }

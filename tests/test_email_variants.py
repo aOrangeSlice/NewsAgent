@@ -1,7 +1,18 @@
 import unittest
+import uuid
+from pathlib import Path
 from unittest.mock import call, patch
 
+from newsagent.db import Database
 from newsagent.pipeline import NewsAgentApp
+
+
+class FakeDelivery:
+    def __init__(self, result):
+        self.result = result
+
+    def send(self, subject, body):
+        return self.result
 
 
 class EmailVariantTests(unittest.TestCase):
@@ -84,6 +95,32 @@ class EmailVariantTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(len(result["deliveries"]), 2)
+
+    def test_send_email_writes_delivery_log(self):
+        path = Path(__file__).resolve().parent / f"delivery_{uuid.uuid4().hex}.db"
+        self.app.settings = {"delivery": {"email": {}}}
+        self.app.db = Database(path)
+        try:
+            self.app.db.init()
+            with patch(
+                "newsagent.pipeline.EmailDelivery.from_settings",
+                return_value=FakeDelivery({"ok": True, "recipients": ["reader@example.com"]}),
+            ):
+                result = self.app.send_email("body", briefing_id=42, subject="Subject")
+
+            row = self.app.db.conn.execute(
+                "SELECT channel, status, message FROM delivery_logs"
+            ).fetchone()
+        finally:
+            self.app.db.close()
+            for candidate in [path, Path(f"{path}-wal"), Path(f"{path}-shm")]:
+                if candidate.exists():
+                    candidate.unlink()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(row["channel"], "email")
+        self.assertEqual(row["status"], "success")
+        self.assertIn('"briefing_id": 42', row["message"])
 
 
 if __name__ == "__main__":

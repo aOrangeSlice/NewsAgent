@@ -5,7 +5,7 @@ from typing import Any
 import json
 import sqlite3
 
-from .models import NewsItem, utc_now_iso
+from .models import NewsItem, tokyo_now_iso
 
 
 SCHEMA = """
@@ -108,6 +108,38 @@ CREATE TABLE IF NOT EXISTS delivery_logs (
     message TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    level TEXT NOT NULL,
+    event TEXT NOT NULL,
+    message_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_logs_run_id ON pipeline_logs(run_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_logs_created ON pipeline_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_pipeline_logs_level_event ON pipeline_logs(level, event);
+
+CREATE TABLE IF NOT EXISTS source_collection_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    fetched INTEGER NOT NULL,
+    inserted INTEGER NOT NULL,
+    existing INTEGER NOT NULL,
+    error TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_collection_run_id ON source_collection_logs(run_id);
+CREATE INDEX IF NOT EXISTS idx_source_collection_source ON source_collection_logs(source_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_source_collection_status ON source_collection_logs(status, created_at);
 """
 
 
@@ -179,7 +211,7 @@ class Database:
                 source.tier,
                 source.priority,
                 int(source.enabled),
-                utc_now_iso(),
+                tokyo_now_iso(),
             ),
         )
 
@@ -208,7 +240,7 @@ class Database:
         ).fetchall()
 
     def upsert_story_from_raw(self, row: sqlite3.Row, score: float) -> int:
-        now = utc_now_iso()
+        now = tokyo_now_iso()
         tags = _json_load(row["tags_json"], [])
         source_urls = [row["url"]]
         item_ids = [int(row["id"])]
@@ -272,6 +304,41 @@ class Database:
         stories = [story_from_row(row) for row in rows]
         self._attach_latest_item_metadata(stories)
         return self._rank_with_feedback(stories)[:limit]
+
+    def list_stories_by_category(
+        self,
+        category: str,
+        limit: int = 20,
+        unique_by_source: bool = False,
+    ) -> list[dict[str, Any]]:
+        row_limit = max(limit * 5, limit) if unique_by_source else limit
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM story_clusters
+            WHERE category = ?
+            ORDER BY updated_at DESC, score DESC
+            LIMIT ?
+            """,
+            (category, row_limit),
+        ).fetchall()
+        stories = [story_from_row(row) for row in rows]
+        self._attach_latest_item_metadata(stories)
+        if not unique_by_source:
+            return stories
+
+        unique_stories: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for story in stories:
+            source_urls = story.get("source_urls") or []
+            key = source_urls[0] if source_urls else story["cluster_key"]
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_stories.append(story)
+            if len(unique_stories) >= limit:
+                break
+        return unique_stories
 
     def _attach_latest_item_metadata(self, stories: list[dict[str, Any]]) -> None:
         item_ids = {
@@ -348,7 +415,7 @@ class Database:
                 translation_status,
                 translation_model,
                 json.dumps(story_ids),
-                utc_now_iso(),
+                tokyo_now_iso(),
             ),
         )
         self.conn.commit()
@@ -357,7 +424,7 @@ class Database:
     def save_feedback(self, story_id: int, feedback: str, note: str = "") -> int:
         cur = self.conn.execute(
             "INSERT INTO feedback (story_id, feedback, note, created_at) VALUES (?, ?, ?, ?)",
-            (story_id, feedback, note, utc_now_iso()),
+            (story_id, feedback, note, tokyo_now_iso()),
         )
         self.conn.commit()
         return int(cur.lastrowid)
@@ -365,7 +432,77 @@ class Database:
     def log_llm_run(self, provider: str, model: str, ok: bool, error: str = "") -> None:
         self.conn.execute(
             "INSERT INTO llm_runs (provider, model, ok, error, created_at) VALUES (?, ?, ?, ?, ?)",
-            (provider, model, int(ok), error[:500], utc_now_iso()),
+            (provider, model, int(ok), error[:500], tokyo_now_iso()),
+        )
+        self.conn.commit()
+
+    def log_delivery(self, channel: str, status: str, message: dict[str, Any] | str = "") -> None:
+        if isinstance(message, dict):
+            message_text = json.dumps(message, ensure_ascii=False)
+        else:
+            message_text = str(message)
+        self.conn.execute(
+            "INSERT INTO delivery_logs (channel, status, message, created_at) VALUES (?, ?, ?, ?)",
+            (channel, status, message_text[:1000], tokyo_now_iso()),
+        )
+        self.conn.commit()
+
+    def log_pipeline_event(
+        self,
+        run_id: str,
+        level: str,
+        event: str,
+        message: dict[str, Any],
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO pipeline_logs (run_id, level, event, message_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                level,
+                event,
+                json.dumps(message, ensure_ascii=False),
+                tokyo_now_iso(),
+            ),
+        )
+        self.conn.commit()
+
+    def log_source_collection(
+        self,
+        run_id: str,
+        source_id: str,
+        source_name: str,
+        status: str,
+        fetched: int,
+        inserted: int,
+        existing: int,
+        error: str = "",
+        started_at: str = "",
+        finished_at: str = "",
+    ) -> None:
+        now = tokyo_now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO source_collection_logs
+                (run_id, source_id, source_name, status, fetched, inserted, existing,
+                 error, started_at, finished_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                source_id,
+                source_name,
+                status,
+                int(fetched),
+                int(inserted),
+                int(existing),
+                error[:500],
+                started_at or now,
+                finished_at or now,
+                now,
+            ),
         )
         self.conn.commit()
 

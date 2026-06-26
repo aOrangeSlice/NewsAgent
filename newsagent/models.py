@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import hashlib
 import json
 import re
+
+
+TOKYO_TZ = timezone(timedelta(hours=9), "Asia/Tokyo")
+
+
+def tokyo_now_iso() -> str:
+    return datetime.now(TOKYO_TZ).replace(microsecond=0).isoformat()
 
 
 def utc_now_iso() -> str:
@@ -81,7 +88,7 @@ class NewsItem:
     url: str
     summary: str = ""
     published_at: str = ""
-    retrieved_at: str = field(default_factory=utc_now_iso)
+    retrieved_at: str = field(default_factory=tokyo_now_iso)
     language: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)

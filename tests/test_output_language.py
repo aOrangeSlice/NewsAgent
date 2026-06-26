@@ -8,7 +8,15 @@ from newsagent.collectors.base import detect_language
 from newsagent.db import Database
 from newsagent.llm import (
     Summarizer,
+    answer_cites_known_sources,
+    answer_matches_language,
+    build_answer_prompt,
+    build_answer_regeneration_prompt,
+    build_answer_rewrite_prompt,
+    enforce_deterministic_market_section,
+    fallback_answer,
     fallback_briefing,
+    group_market_stories,
     normalize_output_language,
     protect_translation_tokens,
     restore_translation_tokens,
@@ -155,6 +163,288 @@ class OutputLanguageTests(unittest.TestCase):
 
         self.assertIn("Source: https://example.com/a", body)
         self.assertNotIn("## Sources", body)
+
+    def test_market_grouping_keeps_international_sectors_out_of_commodities_fx(self):
+        groups = group_market_stories(
+            [
+                {
+                    "id": 1,
+                    "title": "Nikkei 225: 100.00 (0.10%)",
+                    "category": "market",
+                    "region": "global",
+                    "source_urls": ["https://finance.yahoo.com/quote/^N225"],
+                },
+                {
+                    "id": 2,
+                    "title": "Japan TOPIX Banks ETF: 100.00 (0.20%)",
+                    "category": "market",
+                    "region": "japan",
+                    "source_urls": ["https://finance.yahoo.com/quote/1615.T"],
+                },
+                {
+                    "id": 3,
+                    "title": "WTI Crude Oil: 70.00 (-1.00%)",
+                    "category": "market",
+                    "region": "global",
+                    "source_urls": ["https://finance.yahoo.com/quote/CL=F"],
+                },
+            ]
+        )
+
+        self.assertEqual([story["id"] for story in groups["global_indices"]], [1])
+        self.assertEqual([story["id"] for story in groups["international_sectors"]["japan"]], [2])
+        self.assertEqual([story["id"] for story in groups["commodities_fx"]], [3])
+
+    def test_llm_market_section_is_replaced_with_deterministic_grouping(self):
+        body = """# Daily Brief
+
+## Market overview: global indices and sectors
+
+### Commodities and FX
+- [2] Japan TOPIX Banks ETF: 100.00 (0.20%) Source: https://finance.yahoo.com/quote/1615.T
+
+## Other section
+- Keep this."""
+        stories = [
+            {
+                "id": 1,
+                "title": "S&P 500: 100.00 (0.10%)",
+                "category": "market",
+                "region": "global",
+                "source_urls": ["https://finance.yahoo.com/quote/^GSPC"],
+            },
+            {
+                "id": 2,
+                "title": "Japan TOPIX Banks ETF: 100.00 (0.20%)",
+                "category": "market",
+                "region": "japan",
+                "source_urls": ["https://finance.yahoo.com/quote/1615.T"],
+            },
+            {
+                "id": 3,
+                "title": "WTI Crude Oil: 70.00 (-1.00%)",
+                "category": "market",
+                "region": "global",
+                "source_urls": ["https://finance.yahoo.com/quote/CL=F"],
+            },
+        ]
+
+        result = enforce_deterministic_market_section(body, stories)
+
+        self.assertIn("### Global indices", result)
+        self.assertIn("### International sectors by region", result)
+        self.assertIn("#### Japan", result)
+        self.assertIn("### Commodities and FX", result)
+        self.assertLess(result.index("#### Japan"), result.index("### Commodities and FX"))
+        self.assertIn("## Other section", result)
+
+    def test_deterministic_market_section_lists_up_to_ten_global_indices(self):
+        symbols = [
+            "^GSPC",
+            "^DJI",
+            "^IXIC",
+            "000001.SS",
+            "^N225",
+            "^FTSE",
+            "^GDAXI",
+            "^FCHI",
+            "^HSI",
+            "^KS11",
+        ]
+        stories = [
+            {
+                "id": 100 + index,
+                "title": f"Index {symbol}: 100.00 (0.{index}0%)",
+                "category": "market",
+                "region": "global",
+                "source_urls": [f"https://finance.yahoo.com/quote/{symbol}"],
+            }
+            for index, symbol in enumerate(symbols, start=1)
+        ]
+
+        result = enforce_deterministic_market_section("# Daily Brief\n\n## Other", stories)
+        global_section = result.split("### Global indices", 1)[1].split("## Other", 1)[0]
+
+        for symbol in symbols:
+            self.assertIn(f"https://finance.yahoo.com/quote/{symbol}", global_section)
+
+    def test_rules_brief_market_section_lists_ten_indices_and_regions(self):
+        symbols = [
+            "^GSPC",
+            "^DJI",
+            "^IXIC",
+            "000001.SS",
+            "^N225",
+            "^FTSE",
+            "^GDAXI",
+            "^FCHI",
+            "^HSI",
+            "^KS11",
+        ]
+        stories = [
+            {
+                "id": 100 + index,
+                "title": f"Index {symbol}: 100.00 (0.{index}0%)",
+                "category": "market",
+                "region": "global",
+                "source_urls": [f"https://finance.yahoo.com/quote/{symbol}"],
+                "tags": [],
+            }
+            for index, symbol in enumerate(symbols, start=1)
+        ] + [
+            {
+                "id": 300,
+                "title": "Japan TOPIX Banks ETF: 100.00 (0.20%)",
+                "category": "market",
+                "region": "japan",
+                "source_urls": ["https://finance.yahoo.com/quote/1615.T"],
+                "tags": [],
+            },
+            {
+                "id": 301,
+                "title": "WTI Crude Oil: 70.00 (-1.00%)",
+                "category": "market",
+                "region": "global",
+                "source_urls": ["https://finance.yahoo.com/quote/CL=F"],
+                "tags": [],
+            },
+        ]
+
+        body = fallback_briefing(stories, "original")
+        global_section = body.split("### Global indices", 1)[1].split("### International sectors", 1)[0]
+
+        for symbol in symbols:
+            self.assertIn(f"https://finance.yahoo.com/quote/{symbol}", global_section)
+        self.assertIn("#### Japan", body)
+        self.assertLess(body.index("#### Japan"), body.index("### Commodities and FX"))
+
+    def test_answer_prompt_uses_strong_target_language_instruction(self):
+        prompt = build_answer_prompt("AIインフラの重要ニュースは？", [], "ja")
+
+        self.assertIn("Answer in Japanese only.", prompt)
+        self.assertNotIn("Answer in language: ja.", prompt)
+
+    def test_answer_language_detection_flags_mismatch(self):
+        self.assertTrue(answer_matches_language("これは日本語の回答です。", "ja"))
+        self.assertFalse(answer_matches_language("这是中文回答。", "ja"))
+
+    def test_answer_source_validation_rejects_unknown_urls(self):
+        stories = [{"source_urls": ["https://example.com/source"]}]
+
+        self.assertTrue(answer_cites_known_sources("根拠：https://example.com/source", stories))
+        self.assertFalse(answer_cites_known_sources("根拠：https://example.com/other", stories))
+
+    def test_answer_rewrite_prompt_requests_target_language_only(self):
+        prompt = build_answer_rewrite_prompt("这是中文回答。", "ja")
+
+        self.assertIn("Japanese only", prompt)
+        self.assertIn("Do not add new facts.", prompt)
+
+    def test_answer_regeneration_prompt_requires_source_urls(self):
+        prompt = build_answer_regeneration_prompt(
+            "AIインフラの重要ニュースは？",
+            [{"id": 12, "title": "AI chip", "source_urls": ["https://example.com/a"]}],
+            "ja",
+        )
+
+        self.assertIn("Regenerate a validated answer", prompt)
+        self.assertIn("Copy citation URLs exactly from story.source_urls", prompt)
+        self.assertIn("https://example.com/a", prompt)
+
+    @patch("newsagent.llm.OllamaClient.generate")
+    @patch("newsagent.llm.OllamaClient.available", return_value=True)
+    def test_answer_question_rewrites_language_mismatch(self, _available, generate):
+        generate.side_effect = [
+            "这是中文回答。",
+            "これは日本語の回答です。",
+        ]
+
+        body = Summarizer(self.settings).answer_question("AIインフラの重要ニュースは？", [], language="ja")
+
+        self.assertEqual(body, "これは日本語の回答です。")
+        self.assertEqual(generate.call_count, 2)
+
+    @patch("newsagent.llm.OllamaClient.generate")
+    @patch("newsagent.llm.OllamaClient.available", return_value=True)
+    def test_answer_question_regenerates_when_sources_fail_validation(self, _available, generate):
+        generate.side_effect = [
+            "これは日本語ですが、根拠は https://example.com/wrong です。",
+            "これは日本語ですが、根拠は https://example.com/wrong です。",
+            "これは検証済みの回答です。根拠：https://example.com/a",
+        ]
+
+        body = Summarizer(self.settings).answer_question(
+            "AIインフラの重要ニュースは？",
+            [{"id": 12, "title": "AI chip", "source_urls": ["https://example.com/a"]}],
+            language="ja",
+        )
+
+        self.assertIn("検証済み", body)
+        self.assertEqual(generate.call_count, 3)
+
+    @patch("newsagent.llm.OllamaClient.generate")
+    @patch("newsagent.llm.OllamaClient.available", return_value=True)
+    def test_answer_validation_failures_are_logged_to_llm_runs(self, _available, generate):
+        class FakeDB:
+            def __init__(self):
+                self.records = []
+
+            def log_llm_run(self, provider, model, ok, error=""):
+                self.records.append(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "ok": ok,
+                        "error": error,
+                    }
+                )
+
+        fake_db = FakeDB()
+        generate.side_effect = [
+            "English answer without a known citation.",
+            "English rewrite without a known citation.",
+            "English regeneration without a known citation.",
+        ]
+
+        Summarizer(self.settings, db=fake_db).answer_question(
+            "question",
+            [{"id": 12, "title": "AI chip", "source_urls": ["https://example.com/a"]}],
+            language="ja",
+        )
+
+        validation_errors = [
+            record["error"]
+            for record in fake_db.records
+            if not record["ok"] and "answer validation failed" in record["error"]
+        ]
+        self.assertEqual(len(validation_errors), 3)
+        self.assertTrue(all("target_language=ja" in error for error in validation_errors))
+
+    def test_fallback_answer_honors_japanese_language(self):
+        body = fallback_answer(
+            "AIインフラの重要ニュースは？",
+            [
+                {
+                    "id": 12,
+                    "title": "AI infrastructure headline",
+                    "summary": "AI infrastructure summary",
+                    "source_urls": ["https://example.com/a"],
+                }
+            ],
+            "ja",
+        )
+
+        self.assertTrue(body.startswith("質問：AIインフラの重要ニュースは？"))
+        self.assertIn("現在のローカルデータベース", body)
+        self.assertIn("フォールバック回答", body)
+        self.assertIn("LLM が利用できない", body)
+        self.assertNotIn("问题：", body)
+
+    @patch("newsagent.llm.OllamaClient.available", return_value=False)
+    def test_answer_question_normalizes_language_aliases(self, _available):
+        body = Summarizer(self.settings).answer_question("Any news?", [], language="jp")
+
+        self.assertIn("関連するローカル記録", body)
 
     def test_detects_common_source_languages(self):
         self.assertEqual(detect_language("English headline"), "en")

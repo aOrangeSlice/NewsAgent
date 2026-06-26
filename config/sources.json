@@ -301,8 +301,12 @@
       {"symbol": "CL=F", "label": "WTI Crude Oil"},
       {"symbol": "BZ=F", "label": "Brent Crude Oil"},
       {"symbol": "JPY=X", "label": "USD/JPY"},
+      {"symbol": "JPYUSD=X", "label": "JPY/USD"},
       {"symbol": "GBPUSD=X", "label": "GBP/USD"},
       {"symbol": "CNY=X", "label": "USD/CNY"},
+      {"symbol": "CNYUSD=X", "label": "CNY/USD"},
+      {"symbol": "CNYJPY=X", "label": "CNY/JPY"},
+      {"symbol": "JPYCNY=X", "label": "JPY/CNY"},
       {"symbol": "XLK", "label": "US Technology Sector ETF"},
       {"symbol": "XLF", "label": "US Financial Sector ETF"},
       {"symbol": "XLV", "label": "US Health Care Sector ETF"},
@@ -311,6 +315,106 @@
       {"symbol": "XLY", "label": "US Consumer Discretionary Sector ETF"}
     ],
     "tags": ["market", "stock_index", "sector", "oil", "fx", "us", "china", "japan", "europe", "korea"]
+  },
+  {
+    "id": "yahoo_japan_sector_quotes",
+    "name": "Yahoo Japan Equity Sector Quotes",
+    "kind": "yahoo_quotes",
+    "category": "market",
+    "subcategory": "japan_equity_sectors",
+    "region": "japan",
+    "enabled": true,
+    "tier": 2,
+    "priority": "P1",
+    "symbols": [
+      {"symbol": "1615.T", "label": "Japan TOPIX Banks ETF"},
+      {"symbol": "1618.T", "label": "Japan TOPIX Energy Resources ETF"},
+      {"symbol": "1621.T", "label": "Japan TOPIX Pharmaceuticals ETF"},
+      {"symbol": "1624.T", "label": "Japan TOPIX Machinery ETF"},
+      {"symbol": "1625.T", "label": "Japan TOPIX Electric Appliances and Precision Instruments ETF"},
+      {"symbol": "1627.T", "label": "Japan TOPIX Electric Power and Gas ETF"}
+    ],
+    "tags": ["market", "stock_index", "sector", "equity", "japan", "topix", "bank", "energy", "healthcare", "industrial", "technology", "utilities"]
+  },
+  {
+    "id": "yahoo_china_a_sector_quotes",
+    "name": "Yahoo China A-Share Sector Quotes",
+    "kind": "yahoo_quotes",
+    "category": "market",
+    "subcategory": "china_a_share_sectors",
+    "region": "china",
+    "enabled": true,
+    "tier": 2,
+    "priority": "P1",
+    "symbols": [
+      {"symbol": "510300.SS", "label": "China CSI 300 ETF"},
+      {"symbol": "512010.SS", "label": "China Healthcare ETF"},
+      {"symbol": "512480.SS", "label": "China Semiconductor ETF"},
+      {"symbol": "512660.SS", "label": "China Defense Industry ETF"},
+      {"symbol": "512800.SS", "label": "China Bank ETF"},
+      {"symbol": "515790.SS", "label": "China Photovoltaic ETF"}
+    ],
+    "tags": ["market", "stock_index", "sector", "equity", "china", "a_share", "csi300", "healthcare", "semiconductor", "defense", "bank", "solar"]
+  },
+  {
+    "id": "yahoo_hong_kong_china_sector_quotes",
+    "name": "Yahoo Hong Kong and China Equity Sector Quotes",
+    "kind": "yahoo_quotes",
+    "category": "market",
+    "subcategory": "hong_kong_china_equity_sectors",
+    "region": "china",
+    "enabled": true,
+    "tier": 2,
+    "priority": "P1",
+    "symbols": [
+      {"symbol": "2800.HK", "label": "Hong Kong Tracker Fund"},
+      {"symbol": "2828.HK", "label": "Hang Seng China Enterprises ETF"},
+      {"symbol": "3033.HK", "label": "CSOP Hang Seng Tech ETF"},
+      {"symbol": "3067.HK", "label": "iShares Hang Seng Tech ETF"},
+      {"symbol": "3088.HK", "label": "Hong Kong Consumer Staples ETF"},
+      {"symbol": "3188.HK", "label": "ChinaAMC CSI 300 Index ETF"}
+    ],
+    "tags": ["market", "stock_index", "sector", "equity", "hong_kong", "china", "hang_seng", "technology", "consumer", "h_share", "csi300"]
+  },
+  {
+    "id": "yahoo_europe_sector_quotes",
+    "name": "Yahoo Europe Equity Sector Quotes",
+    "kind": "yahoo_quotes",
+    "category": "market",
+    "subcategory": "europe_equity_sectors",
+    "region": "europe",
+    "enabled": true,
+    "tier": 2,
+    "priority": "P1",
+    "symbols": [
+      {"symbol": "EXV1.DE", "label": "Europe Banks ETF"},
+      {"symbol": "EXV2.DE", "label": "Europe Automobiles and Parts ETF"},
+      {"symbol": "EXV4.DE", "label": "Europe Chemicals ETF"},
+      {"symbol": "EXV8.DE", "label": "Europe Health Care ETF"},
+      {"symbol": "EXV9.DE", "label": "Europe Industrials ETF"},
+      {"symbol": "EXH1.DE", "label": "Europe Insurance ETF"}
+    ],
+    "tags": ["market", "stock_index", "sector", "equity", "europe", "stoxx600", "bank", "auto", "materials", "healthcare", "industrial", "insurance"]
+  },
+  {
+    "id": "yahoo_india_sector_quotes",
+    "name": "Yahoo India Equity Sector Quotes",
+    "kind": "yahoo_quotes",
+    "category": "market",
+    "subcategory": "india_equity_sectors",
+    "region": "india",
+    "enabled": true,
+    "tier": 2,
+    "priority": "P1",
+    "symbols": [
+      {"symbol": "^NSEBANK", "label": "India NIFTY Bank"},
+      {"symbol": "^CNXIT", "label": "India NIFTY IT"},
+      {"symbol": "^CNXPHARMA", "label": "India NIFTY Pharma"},
+      {"symbol": "^CNXAUTO", "label": "India NIFTY Auto"},
+      {"symbol": "^CNXFMCG", "label": "India NIFTY FMCG"},
+      {"symbol": "^CNXENERGY", "label": "India NIFTY Energy"}
+    ],
+    "tags": ["market", "stock_index", "sector", "equity", "india", "nifty", "bank", "technology", "healthcare", "auto", "consumer", "energy"]
   },
   {
     "id": "bbc_world",

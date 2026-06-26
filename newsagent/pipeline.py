@@ -10,6 +10,7 @@ from .config import load_settings, load_sources
 from .db import Database
 from .delivery import EmailDelivery
 from .llm import Summarizer, normalize_output_language
+from .models import tokyo_now_iso
 from .ranking import parse_dt, score_raw_item
 
 
@@ -30,34 +31,92 @@ class NewsAgentApp:
     def close(self) -> None:
         self.db.close()
 
-    def collect(self, limit: int | None = None) -> dict[str, Any]:
+    def collect(self, limit: int | None = None, run_id: str | None = None) -> dict[str, Any]:
+        run_id = run_id or uuid4().hex
         per_source_limit = limit or int(self.settings.get("collection", {}).get("per_source_limit", 30))
         fetched = 0
         inserted = 0
         existing = 0
         errors = []
+        source_stats = []
         for source in self.sources:
             if not source.enabled:
                 continue
+            source_fetched = 0
+            source_inserted = 0
+            source_existing = 0
+            source_started_at = tokyo_now_iso()
             try:
                 collector = build_collector(source)
                 items = collector.collect(limit=per_source_limit)
                 for item in items:
                     fetched += 1
+                    source_fetched += 1
                     if self.db.insert_raw_item(item):
                         inserted += 1
+                        source_inserted += 1
                     else:
                         existing += 1
+                        source_existing += 1
                 self.db.commit()
+                source_finished_at = tokyo_now_iso()
+                self.db.log_source_collection(
+                    run_id=run_id,
+                    source_id=source.id,
+                    source_name=source.name,
+                    status="success",
+                    fetched=source_fetched,
+                    inserted=source_inserted,
+                    existing=source_existing,
+                    started_at=source_started_at,
+                    finished_at=source_finished_at,
+                )
+                source_stats.append(
+                    {
+                        "source": source.id,
+                        "source_name": source.name,
+                        "status": "success",
+                        "fetched": source_fetched,
+                        "inserted": source_inserted,
+                        "existing": source_existing,
+                    }
+                )
             except Exception as exc:
-                errors.append({"source": source.id, "error": str(exc)})
+                source_finished_at = tokyo_now_iso()
+                error = {"source": source.id, "error": str(exc)}
+                errors.append(error)
+                self.db.log_source_collection(
+                    run_id=run_id,
+                    source_id=source.id,
+                    source_name=source.name,
+                    status="failed",
+                    fetched=source_fetched,
+                    inserted=source_inserted,
+                    existing=source_existing,
+                    error=str(exc),
+                    started_at=source_started_at,
+                    finished_at=source_finished_at,
+                )
+                source_stats.append(
+                    {
+                        "source": source.id,
+                        "source_name": source.name,
+                        "status": "failed",
+                        "fetched": source_fetched,
+                        "inserted": source_inserted,
+                        "existing": source_existing,
+                        "error": str(exc),
+                    }
+                )
         clustered = self.cluster()
         return {
+            "run_id": run_id,
             "fetched": fetched,
             "inserted": inserted,
             "existing": existing,
             "clustered": clustered,
             "errors": errors,
+            "sources": source_stats,
         }
 
     def cluster(self) -> int:
@@ -128,10 +187,11 @@ class NewsAgentApp:
         return variants
 
     def ask(self, question: str, language: str = "zh", limit: int = 12) -> str:
+        selected_language = normalize_output_language(language)
         stories = self.db.list_stories(limit=limit, query=expand_query(question))
         if not stories:
             stories = self.db.list_stories(limit=limit)
-        return self.summarizer.answer_question(question, stories, language=language)
+        return self.summarizer.answer_question(question, stories, language=selected_language)
 
     def daily(
         self,
@@ -140,8 +200,10 @@ class NewsAgentApp:
         brief_limit: int | None = None,
         email: bool = False,
         output_language: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[int, str, dict[str, Any], Path, dict[str, Any] | None]:
-        collect_result = self.collect(limit=collect_limit)
+        run_id = run_id or uuid4().hex
+        collect_result = self.collect(limit=collect_limit, run_id=run_id)
         selected_language = normalize_output_language(
             output_language
             or language
@@ -175,6 +237,17 @@ class NewsAgentApp:
             )
             if email
             else None
+        )
+        self.last_daily_summary = build_daily_summary(
+            run_id=run_id,
+            briefing_id=briefing_id,
+            preferred=preferred,
+            variants=variants,
+            stories=stories,
+            collect_result=collect_result,
+            outbox_path=path,
+            email_result=email_result,
+            min_stories=int(briefing_settings.get("min_stories", 0)),
         )
         return briefing_id, body, collect_result, path, email_result
 
@@ -212,7 +285,8 @@ class NewsAgentApp:
         briefing_settings = self.settings.get("briefing", {})
         candidate_limit = max(max_stories * 3, 120)
         candidates = merge_unique_stories(
-            self.db.list_stories(limit=40, query="market stock_index sector oil fx")
+            self.db.list_stories_by_category("market", limit=80, unique_by_source=True)
+            + self.db.list_stories(limit=80, query="market stock_index sector oil fx")
             + self.db.list_stories(limit=300, query="mainstream world europe china us japan korea globaltimes cctv cgtn xinhua bbc npr nhk yonhap")
             + self.db.list_stories(limit=80, query="china cctv cgtn xinhua globaltimes youtube video official xinwen_lianbo")
             + self.db.list_stories(limit=80, query="medicine medical health journal fda who lancet nejm jama nature digital_medicine digital_health regulation clinical")
@@ -232,7 +306,34 @@ class NewsAgentApp:
     ) -> dict[str, Any]:
         subject_id = f" #{briefing_id}" if briefing_id else ""
         subject = subject or f"NewsAgent Daily Brief{subject_id}"
-        return EmailDelivery.from_settings(self.settings).send(subject=subject, body=body)
+        try:
+            result = EmailDelivery.from_settings(self.settings).send(subject=subject, body=body)
+        except Exception as exc:
+            if hasattr(self, "db"):
+                self.db.log_delivery(
+                    "email",
+                    "failed",
+                    {
+                        "briefing_id": briefing_id,
+                        "subject": subject,
+                        "error": str(exc),
+                    },
+                )
+            raise
+
+        if hasattr(self, "db"):
+            self.db.log_delivery(
+                "email",
+                "success" if result.get("ok") else "failed",
+                {
+                    "briefing_id": briefing_id,
+                    "subject": subject,
+                    "ok": bool(result.get("ok")),
+                    "recipient_count": len(result.get("recipients", [])),
+                    "error": result.get("error", ""),
+                },
+            )
+        return result
 
     def feedback(self, story_id: int, feedback: str, note: str = "") -> int:
         allowed = {"important", "irrelevant", "show_less", "track_more"}
@@ -269,8 +370,8 @@ def select_briefing_stories(
         seen.add(story_id)
         selected.append(story)
 
-    market = [s for s in candidates if s.get("category") == "market"]
-    for story in market[:24]:
+    market = prioritize_market_stories([s for s in candidates if s.get("category") == "market"])
+    for story in market[:45]:
         add(story)
 
     world_news = [s for s in candidates if s.get("category") == "world_news"]
@@ -311,6 +412,84 @@ def merge_unique_stories(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
+GLOBAL_INDEX_SYMBOLS = {
+    "^GSPC",
+    "^DJI",
+    "^IXIC",
+    "000001.SS",
+    "^N225",
+    "^FTSE",
+    "^GDAXI",
+    "^FCHI",
+    "^HSI",
+    "^KS11",
+}
+
+US_SECTOR_SYMBOLS = {"XLK", "XLF", "XLV", "XLE", "XLI", "XLY"}
+
+COMMODITY_FX_SYMBOLS = {
+    "CL=F",
+    "BZ=F",
+    "JPY=X",
+    "JPYUSD=X",
+    "GBPUSD=X",
+    "CNY=X",
+    "CNYUSD=X",
+    "CNYJPY=X",
+    "JPYCNY=X",
+}
+
+
+def prioritize_market_stories(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stories = unique_market_stories_by_source(stories)
+    buckets = {
+        "global_indices": [],
+        "commodities_fx": [],
+        "us_sectors": [],
+        "international_sectors": [],
+        "other": [],
+    }
+    for story in stories:
+        symbol = extract_market_symbol((story.get("source_urls") or [""])[0])
+        if symbol in GLOBAL_INDEX_SYMBOLS:
+            buckets["global_indices"].append(story)
+        elif symbol in COMMODITY_FX_SYMBOLS:
+            buckets["commodities_fx"].append(story)
+        elif symbol in US_SECTOR_SYMBOLS:
+            buckets["us_sectors"].append(story)
+        elif story.get("category") == "market":
+            buckets["international_sectors"].append(story)
+        else:
+            buckets["other"].append(story)
+    return (
+        buckets["global_indices"]
+        + buckets["commodities_fx"]
+        + buckets["us_sectors"]
+        + buckets["international_sectors"]
+        + buckets["other"]
+    )
+
+
+def unique_market_stories_by_source(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    seen = set()
+    for story in stories:
+        source_urls = story.get("source_urls") or []
+        key = source_urls[0] if source_urls else story.get("cluster_key") or story.get("title")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(story)
+    return result
+
+
+def extract_market_symbol(url: str) -> str:
+    marker = "/quote/"
+    if marker not in url:
+        return ""
+    return url.split(marker, 1)[1].split("?", 1)[0].strip("/")
+
+
 def filter_recent_news(
     stories: list[dict[str, Any]],
     lookback_hours: int,
@@ -337,6 +516,66 @@ def is_stale_world_story(story: dict[str, Any]) -> bool:
     urls = story.get("source_urls") or []
     source = urls[0] if urls else ""
     return "english.people.com.cn" in source or "chinadaily.com.cn/a/2017" in source
+
+
+def build_daily_summary(
+    run_id: str,
+    briefing_id: int,
+    preferred: dict[str, Any],
+    variants: list[dict[str, Any]],
+    stories: list[dict[str, Any]],
+    collect_result: dict[str, Any],
+    outbox_path: Path,
+    email_result: dict[str, Any] | None,
+    min_stories: int = 0,
+) -> dict[str, Any]:
+    category_counts: dict[str, int] = {}
+    for story in stories:
+        category = str(story.get("category") or "unknown")
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+    return {
+        "run_id": run_id,
+        "collect": {
+            "run_id": run_id,
+            "fetched": collect_result.get("fetched", 0),
+            "inserted": collect_result.get("inserted", 0),
+            "existing": collect_result.get("existing", 0),
+            "clustered": collect_result.get("clustered", 0),
+            "error_count": len(collect_result.get("errors", [])),
+            "errors": collect_result.get("errors", []),
+            "sources": collect_result.get("sources", []),
+        },
+        "briefing": {
+            "run_id": run_id,
+            "briefing_id": briefing_id,
+            "mode": preferred.get("mode", ""),
+            "generation_status": preferred.get("generation_status", ""),
+            "story_count": len(stories),
+            "min_stories": min_stories,
+            "story_ids": [int(story["id"]) for story in stories if "id" in story],
+            "category_counts": category_counts,
+            "top_titles": [
+                {
+                    "id": int(story["id"]),
+                    "title": story.get("title", ""),
+                    "url": (story.get("source_urls") or [""])[0],
+                }
+                for story in stories[:5]
+                if "id" in story
+            ],
+            "variants": [
+                {
+                    "id": variant.get("id"),
+                    "mode": variant.get("mode"),
+                    "generation_status": variant.get("generation_status"),
+                }
+                for variant in variants
+            ],
+            "outbox_path": str(outbox_path),
+        },
+        "email": email_result,
+    }
 
 
 def expand_query(question: str) -> str:
