@@ -1,6 +1,6 @@
 # NewsAgent 测试清单与简报质量评估表
 
-版本基线：2026-06-24  
+版本基线：2026-06-27  
 适用范围：当前本地版 NewsAgent（采集、存储、排序、规则简报、LLM 简报、翻译、问答、反馈、邮件和 Windows 定时任务）
 
 ## 1. 使用方法
@@ -28,18 +28,18 @@
 
 ## 2. 当前程序基线
 
-截至 2026-06-24 的本地检查结果：
+截至 2026-06-27 的本地检查结果：
 
 | 项目 | 当前情况 |
 |---|---|
-| 信息源 | 36 个，启用 28 个 |
+| 信息源 | 配置文件 42 个，启用 33 个；当前数据库中保留历史 source 行 43 个，启用 34 个 |
 | 采集器 | RSS、CCTV 页面、GitHub Search、Hugging Face Models、Yahoo Quotes |
-| 数据库存量 | raw items 1326；story clusters 1156；briefings 55 |
+| 数据库存量 | raw items 2311；story clusters 1887；briefings 109 |
 | 本地模型 | Ollama `qwen3:8b`，当前可连接 |
 | 简报版本 | 每次生成 rules 与 llm 两版 |
 | 输出语言 | original、中文、英文、日文 |
 | 投递 | Markdown 文件、SMTP 邮件、Windows 计划任务脚本 |
-| 自动化测试 | 17 项通过 |
+| 自动化测试 | 5 个测试文件，40 项通过；运行命令为 `python -m unittest discover -s tests -v` |
 | 已实现反馈 | important、track_more、show_less、irrelevant |
 | 尚未形成完整产品功能 | Breaking Alert、Deep Dive、HTML 报告、数据清理、源健康管理 |
 
@@ -53,7 +53,7 @@
 | OBS-04 | P1 | 同一 URL 或同一事件可重复进入简报 | 增加 URL 归一化、标题相似度和事件级聚类 |
 | OBS-05 | P1 | 当前聚类更新会覆盖来源 URL/item ID，而不是合并多来源证据 | 修改 story upsert 为合并并去重来源和 item |
 | OBS-06 | P0 | 敏感邮件凭据不应以明文保存在配置文件 | 立即改为环境变量并轮换已暴露凭据；增加秘密扫描 |
-| OBS-07 | P1 | `min_stories`、retention 配置和 `delivery_logs` 表目前没有形成实际闭环 | 要么实现，要么从配置和文档中标注为未实现 |
+| OBS-07 | P1 | `delivery_logs` 已记录邮件发送结果，`min_stories` 已能写入 pipeline warning；retention 配置仍没有 cleanup 命令执行 | 为 retention 增加清理命令，或在配置和文档中明确“仅为规划值” |
 | OBS-08 | P1 | 现有自动测试通过，但部分测试把乱码文本作为正确结果 | 修正测试基准，使测试真正验证可读中文/日文 |
 
 ## 3. 发布阻断项（P0）

@@ -14,24 +14,27 @@
 
 ## 快速检查（12 项）
 
-- [●] **1. 程序状态正常**  
+- [ ] **1. 程序状态正常**  
   `python -m newsagent doctor` 可以正常执行，数据库、Ollama 和邮件状态符合预期。
-      "sources": 36,
-    "enabled_sources": 28,
+  当前基线示例：
+  ```json
+  {
+    "sources": 42,
+    "enabled_sources": 33,
     "llm_provider": "ollama",
     "llm_model": "qwen3:8b",
     "ollama_available": true,
     "email_enabled": true,
     "email_configured": true
+  }
+  ```
 
-- [！] **2. 新闻采集正常**  
+- [ ] **2. 新闻采集正常**  
   运行 `python -m newsagent collect --limit 3` 后，有新数据或明确显示“没有新数据”，且失败来源不会中断整个任务。
-    访问所有启用的信息源。
-    每个来源最多获取 3 条。
-    保存新内容到 data/newsagent.db。
-    对内容进行初步去重和聚类。
-    输出类似结果：
-    {
+  访问所有启用的信息源；每个来源最多获取 3 条；保存新内容到 `data/newsagent.db`；对内容进行初步去重和聚类。
+  输出类似结果：
+  ```json
+  {
     "inserted": 81,
     "clustered": 7,
     "errors": [
@@ -41,11 +44,11 @@
       }
     ]
   }
+  ```
 
-- [！] **3. 简报能够生成**  
+- [ ] **3. 简报能够生成**  
   `python -m newsagent daily --output-language zh --collect-limit 3 --brief-limit 20` 可以成功生成 Rules 和 LLM 两版文件。
-    
-
+  检查 `data/outbox/latest.md`、`data/outbox/latest_rules.md`、`data/outbox/latest_llm.md` 是否都被更新。
 
 - [ ] **4. 没有乱码**  
   中文、英文、日文、URL 和数字均正常显示，没有明显乱码或损坏字符。
@@ -74,6 +77,14 @@
 - [ ] **12. 投递与安全正常**  
   测试邮件能正常显示中文且不会重复发送；密码和 Token 没有明文写入配置、日志或 Git。
 
+## 自动化测试
+
+修改程序或文档中的验收逻辑后，至少运行：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
 ## 本次结论
 
 通过数量：____ / 12
@@ -95,4 +106,3 @@
 
 1. ________________________________________
 2. ________________________________________
-

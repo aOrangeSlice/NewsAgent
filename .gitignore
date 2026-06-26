@@ -40,6 +40,10 @@ temp/
 *.tmp
 *.log
 
+# Local document archive
+docs/archive/
+
+
 # Local editor, OS, and Codex/agent metadata
 .vscode/
 .idea/
@@ -48,3 +52,4 @@ temp/
 .DS_Store
 Thumbs.db
 desktop.ini
+

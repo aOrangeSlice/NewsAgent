@@ -2,7 +2,7 @@
 
 Generated from the current SQLite database at `data/newsagent.db` and the database access layer in `newsagent/db.py`.
 
-Last inspected: 2026-06-26
+Last inspected: 2026-06-27
 
 ## 1. Purpose
 
@@ -31,15 +31,15 @@ The database is optimized for a local-first single-user workflow:
 
 | Table | Current rows | Purpose |
 | --- | ---: | --- |
-| `sources` | 38 | Registered collection sources. |
-| `raw_items` | 2,204 | Deduplicated collected source items. |
-| `story_clusters` | 1,821 | Ranked story-level clusters derived from raw items. |
-| `briefings` | 103 | Generated daily or ad hoc briefing documents. |
+| `sources` | 43 | Registered collection sources. |
+| `raw_items` | 2,311 | Deduplicated collected source items. |
+| `story_clusters` | 1,887 | Ranked story-level clusters derived from raw items. |
+| `briefings` | 109 | Generated daily or ad hoc briefing documents. |
 | `feedback` | 1 | User feedback against story clusters. |
-| `llm_runs` | 113 | LLM invocation telemetry. |
-| `delivery_logs` | 0 | Email or other delivery attempts. |
-| `pipeline_logs` | 40 | Pipeline-level structured logs. |
-| `source_collection_logs` | 84 | Per-source collection run results. |
+| `llm_runs` | 118 | LLM invocation telemetry. |
+| `delivery_logs` | 4 | Email or other delivery attempts. |
+| `pipeline_logs` | 50 | Pipeline-level structured logs. |
+| `source_collection_logs` | 183 | Per-source collection run results. |
 
 ## 4. Data Model Overview
 
@@ -92,7 +92,8 @@ Current observed values:
 - Categories: `world_news`, `medicine`, `ai`, `ai_engineering`, `ai_hardware`, `market`, `policy`
 - Kinds: `rss`, `cctv_xinwen_lianbo`, `github_search`, `huggingface_models`, `yahoo_quotes`
 - Priorities: `P0`, `P1`
-- Enabled flags: 29 enabled sources, 9 disabled sources
+- Enabled flags in the database snapshot: 34 enabled sources, 9 disabled sources
+- Current `config/sources.json` contains 42 sources, 33 enabled. The extra database row is historical; source upserts update configured sources but do not delete old source rows.
 
 ### 6.2 `raw_items`
 
@@ -195,9 +196,9 @@ Stores generated briefing documents.
 
 Current observed values:
 
-- Languages: `zh` (68), `original` (19), `ja` (15), `en` (1)
-- Generation modes/statuses: `legacy/legacy` (43), `rules/deterministic` (30), `llm/generated` (30)
-- Translation statuses: `legacy` (41), `translated` (37), `not_requested` (19), `fallback_original` (6)
+- Languages: `zh` (70), `original` (23), `ja` (15), `en` (1)
+- Generation modes/statuses: `legacy/legacy` (43), `rules/deterministic` (33), `llm/generated` (33)
+- Translation statuses: `legacy` (41), `translated` (39), `not_requested` (23), `fallback_original` (6)
 
 Application behavior:
 
@@ -245,7 +246,7 @@ Stores telemetry for LLM calls.
 Current observed values:
 
 - Provider/model: `ollama` / `qwen3:8b`
-- `ok`: 106 successful runs and 7 failed runs
+- `ok`: 111 successful runs and 7 failed runs
 
 ### 6.7 `delivery_logs`
 
@@ -290,15 +291,17 @@ Current observed events:
 - `run_finished`
 - `source_failed`
 - `briefing_below_min_stories`
+- `email_finished`
 
 Current observed event counts:
 
 - `source_failed`: 29
-- `run_started`: 3
-- `collect_finished`: 2
-- `briefing_created`: 2
-- `run_finished`: 2
+- `run_started`: 5
+- `collect_finished`: 4
+- `briefing_created`: 4
+- `run_finished`: 4
 - `briefing_below_min_stories`: 2
+- `email_finished`: 2
 
 ### 6.9 `source_collection_logs`
 
@@ -390,23 +393,25 @@ Current source mix:
 - `ai`: 8 sources
 - `ai_engineering`: 2 sources
 - `ai_hardware`: 1 source
-- `market`: 1 source
+- `market`: 6 sources
 - `policy`: 1 source
-- Enabled sources: 29
+- Enabled sources: 34
 - Disabled sources: 9
+
+Current `config/sources.json` mix may differ from the database if sources were removed or disabled after earlier runs. As of this inspection, config contains 42 sources and 33 enabled sources.
 
 Current story mix:
 
-- `world_news`: 1,059 stories
-- `medicine`: 278 stories
-- `ai`: 252 stories
-- `ai_engineering`: 148 stories
+- `world_news`: 1,082 stories
+- `medicine`: 284 stories
+- `ai`: 253 stories
+- `ai_engineering`: 150 stories
 - `ai_hardware`: 50 stories
-- `market`: 34 stories
+- `market`: 68 stories
 
 Current operational profile:
 
 - LLM provider/model observed: `ollama` / `qwen3:8b`
-- LLM run outcomes observed: 106 successful, 7 failed
-- Source collection statuses observed: 54 `success`, 30 `failed`
-- Pipeline log levels observed: `INFO`, `WARNING`
+- LLM run outcomes observed: 111 successful, 7 failed
+- Source collection statuses observed: 153 `success`, 30 `failed`
+- Pipeline log levels observed: `INFO` (19), `WARNING` (31)

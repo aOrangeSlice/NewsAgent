@@ -155,6 +155,20 @@ Keep the same SMTP configuration and run:
 python -m newsagent daily --output-language zh --email
 ```
 
+## Development and testing
+
+The MVP uses only the Python standard library. Run the automated test suite with:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Useful project docs:
+
+- `docs/IMPLEMENTATION_STATUS.md`: current implemented, partial, and planned scope.
+- `docs/OPERATIONS.md`: local runbook for daily runs, email, logs, and troubleshooting.
+- `docs/TEST_LIST.md`: full manual and automated quality checklist.
+
 ## Add a source
 
 Edit `config/sources.json`. Most new RSS/Atom feeds can be added without code changes:
