@@ -34,7 +34,7 @@ python -m newsagent secrets-scan
 python -m newsagent collect --limit 30
 python -m newsagent source-health
 python -m newsagent brief --output-language zh
-python -m newsagent ask "What are the most important AI infrastructure stories?" --language en
+python -m newsagent ask "AIインフラに関する最も重要なトピックは何でしょうか？" --language ja
 ```
 
 `init-config` creates `config/settings.json` from
