@@ -29,17 +29,17 @@ The database is optimized for a local-first single-user workflow:
 
 ## 3. Current Tables
 
-| Table | Current rows | Purpose |
+| Table | Columns | Purpose |
 | --- | ---: | --- |
-| `sources` | 43 | Registered collection sources. |
-| `raw_items` | 2,311 | Deduplicated collected source items. |
-| `story_clusters` | 1,887 | Ranked story-level clusters derived from raw items. |
-| `briefings` | 109 | Generated daily or ad hoc briefing documents. |
-| `feedback` | 1 | User feedback against story clusters. |
-| `llm_runs` | 118 | LLM invocation telemetry. |
-| `delivery_logs` | 4 | Email or other delivery attempts. |
-| `pipeline_logs` | 50 | Pipeline-level structured logs. |
-| `source_collection_logs` | 183 | Per-source collection run results. |
+| `sources` | 10 | Registered collection sources. |
+| `raw_items` | 18 | Deduplicated collected source items. |
+| `story_clusters` | 13 | Ranked story-level clusters derived from raw items. |
+| `briefings` | 13 | Generated daily or ad hoc briefing documents. |
+| `feedback` | 5 | User feedback against story clusters. |
+| `llm_runs` | 6 | LLM invocation telemetry. |
+| `delivery_logs` | 5 | Email or other delivery attempts. |
+| `pipeline_logs` | 6 | Pipeline-level structured logs. |
+| `source_collection_logs` | 12 | Per-source collection run results. |
 
 ## 4. Data Model Overview
 

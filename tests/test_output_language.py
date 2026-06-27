@@ -17,6 +17,7 @@ from newsagent.llm import (
     fallback_answer,
     fallback_briefing,
     group_market_stories,
+    is_valid_generated_briefing,
     normalize_output_language,
     protect_translation_tokens,
     restore_translation_tokens,
@@ -333,6 +334,22 @@ class OutputLanguageTests(unittest.TestCase):
 
         self.assertTrue(answer_cites_known_sources("根拠：https://example.com/source", stories))
         self.assertFalse(answer_cites_known_sources("根拠：https://example.com/other", stories))
+
+    def test_generated_briefing_validation_rejects_chatty_non_brief_output(self):
+        stories = [{"source_urls": ["https://example.com/source"]}]
+
+        self.assertFalse(
+            is_valid_generated_briefing(
+                "It looks like you've provided market data.\n\nWould you like a chart?",
+                stories,
+            )
+        )
+        self.assertTrue(
+            is_valid_generated_briefing(
+                "# Daily Brief\n\n- [1] Item Source: https://example.com/source",
+                stories,
+            )
+        )
 
     def test_answer_rewrite_prompt_requests_target_language_only(self):
         prompt = build_answer_rewrite_prompt("这是中文回答。", "ja")

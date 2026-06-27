@@ -192,6 +192,8 @@ class Summarizer:
                     clean_model_output(result),
                     stories,
                 )
+                if not is_valid_generated_briefing(cleaned, stories):
+                    raise ValueError("generated briefing failed structure or citation validation")
                 if self.db:
                     self.db.log_llm_run(self.provider, self.model, True)
                 return cleaned, "generated"
@@ -498,6 +500,21 @@ def answer_cites_known_sources(text: str, stories: list[dict[str, Any]]) -> bool
         return True
     cited_urls = {normalize_cited_url(url) for url in re.findall(r"https?://[^\s)>]+", text or "")}
     return bool(cited_urls) and cited_urls.issubset(known_urls)
+
+
+def is_valid_generated_briefing(text: str, stories: list[dict[str, Any]]) -> bool:
+    if not (text or "").lstrip().startswith("# Daily Brief"):
+        return False
+    lower = text.lower()
+    banned_phrases = [
+        "you've provided",
+        "would you like",
+        "let me know",
+        "next steps",
+    ]
+    if any(phrase in lower for phrase in banned_phrases):
+        return False
+    return answer_cites_known_sources(text, stories)
 
 
 def normalize_cited_url(url: str) -> str:

@@ -22,6 +22,26 @@ def sample_item() -> NewsItem:
     )
 
 
+def sample_market_item(retrieved_at: str) -> NewsItem:
+    return NewsItem(
+        source_id="market_source",
+        source_name="Market Source",
+        category="market",
+        subcategory="quotes",
+        region="global",
+        title="Index: 100.00 (0.10%)",
+        url="https://finance.yahoo.com/quote/^TEST",
+        summary="Latest quote.",
+        published_at="2026-06-25T00:00:00+00:00",
+        retrieved_at=retrieved_at,
+        metrics={
+            "symbol": "^TEST",
+            "quote_time": "2026-06-25T00:00:00+00:00",
+            "market_state": "closed",
+        },
+    )
+
+
 class FakeCollector:
     def collect(self, limit: int = 20) -> list[NewsItem]:
         return [sample_item(), sample_item()][:limit]
@@ -46,6 +66,28 @@ class CollectionStatsTests(unittest.TestCase):
         finally:
             db.close()
             self.remove_db_files(path)
+
+    def test_duplicate_market_item_refreshes_retrieved_at_for_reclustering(self):
+        path = self.make_db_path()
+        db = Database(path)
+        try:
+            db.init()
+            self.assertIsInstance(
+                db.insert_raw_item(sample_market_item("2026-06-25T09:00:00+09:00")),
+                int,
+            )
+            self.assertIsNone(
+                db.insert_raw_item(sample_market_item("2026-06-27T09:00:00+09:00"))
+            )
+            row = db.conn.execute(
+                "SELECT retrieved_at FROM raw_items WHERE url = ?",
+                ("https://finance.yahoo.com/quote/^TEST",),
+            ).fetchone()
+        finally:
+            db.close()
+            self.remove_db_files(path)
+
+        self.assertEqual(row["retrieved_at"], "2026-06-27T09:00:00+09:00")
 
     def test_pipeline_event_is_logged_by_run_id(self):
         path = self.make_db_path()

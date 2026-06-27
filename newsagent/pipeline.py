@@ -370,30 +370,47 @@ def select_briefing_stories(
         seen.add(story_id)
         selected.append(story)
 
+    market_quota = min(45, max(12, max_stories // 2))
+    medicine_quota = min(5, max(0, max_stories // 12))
+    ai_quota = min(5, max(0, max_stories // 12))
+    world_quota = max(0, max_stories - market_quota - medicine_quota - ai_quota)
+
     market = prioritize_market_stories([s for s in candidates if s.get("category") == "market"])
-    for story in market[:45]:
+    for story in market[:market_quota]:
         add(story)
 
-    world_news = [s for s in candidates if s.get("category") == "world_news"]
+    world_added = 0
+    world_news = sort_by_freshness_and_score(
+        [s for s in candidates if s.get("category") == "world_news"]
+    )
     for region in WORLD_REGIONS:
+        if world_added >= world_quota:
+            break
         for story in [s for s in world_news if s.get("region") == region and not is_stale_world_story(s)][:5]:
+            if world_added >= world_quota:
+                break
+            before = len(selected)
             add(story)
+            if len(selected) > before:
+                world_added += 1
 
-    medicine = [s for s in candidates if s.get("category") == "medicine"]
-    policy_medical = [
+    medicine = sort_by_freshness_and_score([s for s in candidates if s.get("category") == "medicine"])
+    policy_medical = sort_by_freshness_and_score([
         s
         for s in candidates
         if s.get("category") == "policy"
         and ("medicine" in s.get("tags", []) or "medical" in s.get("tags", []) or "health" in s.get("tags", []))
-    ]
-    for story in (medicine + policy_medical)[:8]:
+    ])
+    for story in (medicine + policy_medical)[:medicine_quota]:
         add(story)
 
-    ai_tech = [s for s in candidates if s.get("category") in {"ai", "ai_engineering", "ai_hardware"}]
-    for story in ai_tech[:8]:
+    ai_tech = sort_by_freshness_and_score(
+        [s for s in candidates if s.get("category") in {"ai", "ai_engineering", "ai_hardware"}]
+    )
+    for story in ai_tech[:ai_quota]:
         add(story)
 
-    for story in candidates:
+    for story in sort_by_freshness_and_score(candidates):
         add(story)
         if len(selected) >= max_stories:
             break
@@ -481,6 +498,18 @@ def unique_market_stories_by_source(stories: list[dict[str, Any]]) -> list[dict[
         seen.add(key)
         result.append(story)
     return result
+
+
+def sort_by_freshness_and_score(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(stories, key=freshness_score_key, reverse=True)
+
+
+def freshness_score_key(story: dict[str, Any]) -> tuple[float, float]:
+    timestamp = parse_dt(story.get("published_at") or "") or parse_dt(story.get("retrieved_at") or "")
+    return (
+        timestamp.timestamp() if timestamp else 0.0,
+        float(story.get("score") or 0),
+    )
 
 
 def extract_market_symbol(url: str) -> str:

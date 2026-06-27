@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 import time
 
 from newsagent.http import fetch_json
@@ -25,9 +26,10 @@ class YahooQuotesCollector(Collector):
             result = (chart.get("result") or [{}])[0]
             meta = result.get("meta", {})
             quote = (result.get("indicators", {}).get("quote") or [{}])[0]
-            closes = [value for value in quote.get("close", []) if value is not None]
-            last = closes[-1] if closes else meta.get("regularMarketPrice")
-            previous = closes[-2] if len(closes) > 1 else meta.get("chartPreviousClose")
+            last, previous = latest_and_previous_price(
+                meta,
+                quote.get("close", []),
+            )
             quote_timestamp = meta.get("regularMarketTime")
             quote_time = timestamp_to_iso(quote_timestamp)
             market_state, next_regular_open = market_session_state(meta)
@@ -68,6 +70,31 @@ def timestamp_to_iso(value) -> str:
     if not isinstance(value, (int, float)):
         return ""
     return datetime.fromtimestamp(value, timezone.utc).replace(microsecond=0).isoformat()
+
+
+def latest_and_previous_price(meta: dict, closes: list) -> tuple[float | int | None, float | int | None]:
+    market_price = meta.get("regularMarketPrice")
+    numeric_market_price = market_price if isinstance(market_price, (float, int)) else None
+    numeric_closes = [value for value in closes if isinstance(value, (float, int))]
+
+    if numeric_market_price is None:
+        last = numeric_closes[-1] if numeric_closes else None
+        previous = numeric_closes[-2] if len(numeric_closes) > 1 else meta.get("chartPreviousClose")
+        return last, previous
+
+    last = numeric_market_price
+    if closes and closes[-1] is None:
+        previous = numeric_closes[-1] if numeric_closes else meta.get("chartPreviousClose")
+    elif numeric_closes and math.isclose(
+        float(numeric_market_price),
+        float(numeric_closes[-1]),
+        rel_tol=1e-6,
+        abs_tol=1e-3,
+    ):
+        previous = numeric_closes[-2] if len(numeric_closes) > 1 else meta.get("chartPreviousClose")
+    else:
+        previous = numeric_closes[-1] if numeric_closes else meta.get("chartPreviousClose")
+    return last, previous
 
 
 def market_session_state(meta: dict, now_timestamp: float | None = None) -> tuple[str, str]:

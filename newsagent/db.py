@@ -222,6 +222,15 @@ class Database:
         sql = f"INSERT OR IGNORE INTO raw_items ({','.join(fields)}) VALUES ({placeholders})"
         cur = self.conn.execute(sql, [record[field] for field in fields])
         if cur.rowcount == 0:
+            if record.get("category") == "market" and item.metrics.get("symbol"):
+                self.conn.execute(
+                    """
+                    UPDATE raw_items
+                    SET retrieved_at = ?
+                    WHERE content_hash = ?
+                    """,
+                    (record["retrieved_at"], record["content_hash"]),
+                )
             return None
         return int(cur.lastrowid)
 

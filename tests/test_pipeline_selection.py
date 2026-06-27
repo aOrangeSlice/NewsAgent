@@ -117,6 +117,59 @@ class PipelineSelectionTests(unittest.TestCase):
             [f"https://finance.yahoo.com/quote/{symbol}" for symbol in global_symbols],
         )
 
+    def test_recent_world_news_beats_older_high_score_items(self):
+        candidates = [
+            story(
+                1,
+                "world_news",
+                "Old high score",
+                region="europe",
+                score=120,
+                published_at="2026-06-25T00:00:00+00:00",
+            ),
+            story(
+                2,
+                "world_news",
+                "Fresh lower score",
+                region="europe",
+                score=90,
+                published_at="2026-06-27T00:00:00+00:00",
+            ),
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=5)
+
+        self.assertEqual(selected[0]["id"], 2)
+
+    def test_non_news_categories_keep_reserved_daily_slots(self):
+        candidates = [
+            story(
+                100 + index,
+                "market",
+                f"Market {index}: 100.00 (0.10%)",
+                source_urls=[f"https://finance.yahoo.com/quote/M{index}"],
+            )
+            for index in range(45)
+        ] + [
+            story(
+                200 + index,
+                "world_news",
+                f"World {index}",
+                region="europe",
+                published_at=f"2026-06-27T00:{index:02d}:00+00:00",
+            )
+            for index in range(25)
+        ] + [
+            story(300, "medicine", "Medical item", published_at="2026-06-27T01:00:00+00:00"),
+            story(301, "ai", "AI item", published_at="2026-06-27T01:00:00+00:00"),
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        selected_categories = {item["category"] for item in selected}
+
+        self.assertIn("medicine", selected_categories)
+        self.assertIn("ai", selected_categories)
+
 
 if __name__ == "__main__":
     unittest.main()
