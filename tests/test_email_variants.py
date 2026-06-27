@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 from newsagent.db import Database
+from newsagent.delivery import resolve_email_password
 from newsagent.pipeline import NewsAgentApp
 
 
@@ -121,6 +122,13 @@ class EmailVariantTests(unittest.TestCase):
         self.assertEqual(row["channel"], "email")
         self.assertEqual(row["status"], "success")
         self.assertIn('"briefing_id": 42', row["message"])
+
+    def test_legacy_password_field_can_name_environment_variable(self):
+        config = {"password": "NEWSAGENT_SMTP_PASSWORD"}
+        with patch.dict("os.environ", {"NEWSAGENT_SMTP_PASSWORD": "app-password"}):
+            password = resolve_email_password(config)
+
+        self.assertEqual(password, "app-password")
 
 
 if __name__ == "__main__":

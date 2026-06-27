@@ -4,6 +4,12 @@ Last updated: 2026-06-27
 
 ## Daily Commands
 
+Create local settings from the checked-in example:
+
+```powershell
+python -m newsagent init-config
+```
+
 Check local configuration and service status:
 
 ```powershell
@@ -20,6 +26,18 @@ Collect source items without generating a brief:
 
 ```powershell
 python -m newsagent collect --limit 30
+```
+
+Inspect recent per-source collection health:
+
+```powershell
+python -m newsagent source-health
+```
+
+Run a local secret scan before enabling scheduled email or committing changes:
+
+```powershell
+python -m newsagent secrets-scan
 ```
 
 Generate a brief without collecting:
@@ -95,8 +113,9 @@ Useful tables:
 
 Common checks:
 
-- If no new items appear, inspect `source_collection_logs` for repeated source failures or all-duplicate runs.
+- If no new items appear, run `python -m newsagent source-health` and inspect `source_collection_logs` for repeated source failures or all-duplicate runs.
 - If email is not sent, run `python -m newsagent doctor` and check `delivery_logs`.
+- If `doctor` reports `secret_scan_ok: false`, run `python -m newsagent secrets-scan --json` and move any real secrets into environment variables.
 - If LLM output is weak or unavailable, check `llm_runs`; the app should fall back to deterministic rules output.
 - If translated output loses URLs or Story IDs, the translation validator should fall back to the canonical original-language body with a warning.
 
@@ -106,8 +125,7 @@ Run the test suite with:
 
 ```powershell
 python -m unittest discover -s tests -v
+python -m newsagent secrets-scan
 ```
 
 The MVP intentionally avoids pip dependencies; `pytest` is not required.
-
-Before using a brief as a daily production email, also run the manual checklist in `docs/QUICK_TEST_CHECKLIST.md`.

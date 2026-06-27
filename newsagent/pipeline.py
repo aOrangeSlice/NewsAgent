@@ -6,12 +6,13 @@ from typing import Any
 from uuid import uuid4
 
 from .collectors import build_collector
-from .config import load_settings, load_sources
+from .config import ROOT, load_settings, load_sources
 from .db import Database
 from .delivery import EmailDelivery
 from .llm import Summarizer, normalize_output_language
 from .models import tokyo_now_iso
 from .ranking import parse_dt, score_raw_item
+from .security import scan_for_secrets
 
 
 WORLD_REGIONS = ["europe", "china", "us", "japan", "korea"]
@@ -344,6 +345,7 @@ class NewsAgentApp:
     def doctor(self) -> dict[str, Any]:
         llm = self.settings.get("llm", {})
         delivery = self.settings.get("delivery", {}).get("email", {})
+        secret_findings = scan_for_secrets(ROOT)
         return {
             "database": self.settings["database"]["path"],
             "sources": len(self.sources),
@@ -353,7 +355,57 @@ class NewsAgentApp:
             "ollama_available": self.summarizer.ollama.available(),
             "email_enabled": bool(delivery.get("enabled", False)),
             "email_configured": EmailDelivery.is_configured(delivery),
+            "secret_scan_ok": not secret_findings,
+            "secret_findings": len(secret_findings),
         }
+
+    def source_health(self, recent_runs: int = 10) -> list[dict[str, Any]]:
+        logged = {
+            item["source"]: item
+            for item in self.db.list_source_health(
+                [source.id for source in self.sources],
+                recent_runs=recent_runs,
+            )
+        }
+        result = []
+        for source in self.sources:
+            health = logged.get(source.id)
+            if health is None:
+                health = {
+                    "source": source.id,
+                    "source_name": source.name,
+                    "recent_runs": 0,
+                    "recent_successes": 0,
+                    "recent_failures": 0,
+                    "recent_fetched": 0,
+                    "recent_inserted": 0,
+                    "recent_existing": 0,
+                    "last_status": "never_run",
+                    "last_error": "",
+                    "last_started_at": "",
+                    "last_finished_at": "",
+                    "last_checked_at": "",
+                }
+            health = dict(health)
+            health["enabled"] = bool(source.enabled)
+            health["kind"] = source.kind
+            health["category"] = source.category
+            runs = int(health["recent_runs"])
+            failures = int(health["recent_failures"])
+            health["failure_rate"] = round(failures / runs, 2) if runs else 0.0
+            result.append(health)
+        return sorted(
+            result,
+            key=lambda item: (
+                not item["enabled"],
+                -int(item["recent_failures"]),
+                item["last_status"] == "success",
+                item["source"],
+            ),
+        )
+
+    def secret_scan(self) -> list[dict[str, Any]]:
+        return scan_for_secrets(ROOT)
 
 
 def select_briefing_stories(

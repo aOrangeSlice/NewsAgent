@@ -31,13 +31,13 @@
   },
   "delivery": {
     "email": {
-      "enabled": true,
+      "enabled": false,
       "host": "smtp.gmail.com",
       "port": 587,
       "use_tls": true,
-      "username": "you@example.com",
-      "password": "NEWSAGENT_SMTP_PASSWORD",
-      "sender": "you@example.com",
+      "username": "",
+      "password_env": "NEWSAGENT_SMTP_PASSWORD",
+      "sender": "",
       "recipients": ["you@example.com"]
     }
   },
@@ -47,6 +47,8 @@
     "briefing_retention_days": 1825,
     "market_snapshot_retention_days": 1095,
     "delivery_log_retention_days": 90,
+    "pipeline_log_retention_days": 90,
+    "source_collection_log_retention_days": 90,
     "llm_run_retention_days": 30
   }
 }

@@ -253,6 +253,51 @@ class Database:
         tags = _json_load(row["tags_json"], [])
         source_urls = [row["url"]]
         item_ids = [int(row["id"])]
+        existing = self.conn.execute(
+            "SELECT * FROM story_clusters WHERE cluster_key = ?",
+            (row["cluster_key"],),
+        ).fetchone()
+        if existing:
+            merged_source_urls = merge_unique_values(
+                _json_load(existing["source_urls_json"], []),
+                source_urls,
+            )
+            merged_item_ids = merge_unique_values(
+                _json_load(existing["item_ids_json"], []),
+                item_ids,
+            )
+            merged_tags = merge_unique_values(_json_load(existing["tags_json"], []), tags)
+            self.conn.execute(
+                """
+                UPDATE story_clusters
+                SET title = ?,
+                    summary = ?,
+                    category = ?,
+                    subcategory = ?,
+                    region = ?,
+                    score = ?,
+                    source_urls_json = ?,
+                    item_ids_json = ?,
+                    tags_json = ?,
+                    updated_at = ?
+                WHERE cluster_key = ?
+                """,
+                (
+                    row["title"],
+                    row["summary"] or "",
+                    row["category"],
+                    row["subcategory"] or "",
+                    row["region"] or "global",
+                    max(float(existing["score"]), score),
+                    json.dumps(merged_source_urls, ensure_ascii=False),
+                    json.dumps(merged_item_ids),
+                    json.dumps(merged_tags, ensure_ascii=False),
+                    now,
+                    row["cluster_key"],
+                ),
+            )
+            return int(existing["id"])
+
         self.conn.execute(
             """
             INSERT INTO story_clusters
@@ -287,6 +332,60 @@ class Database:
             "SELECT id FROM story_clusters WHERE cluster_key = ?", (row["cluster_key"],)
         ).fetchone()
         return int(story["id"])
+
+    def list_source_health(
+        self,
+        source_ids: list[str] | None = None,
+        recent_runs: int = 10,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        where = ""
+        if source_ids:
+            placeholders = ",".join("?" for _ in source_ids)
+            where = f"WHERE source_id IN ({placeholders})"
+            params.extend(source_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT source_id, source_name, status, fetched, inserted, existing,
+                   error, started_at, finished_at, created_at
+            FROM source_collection_logs
+            {where}
+            ORDER BY created_at DESC, id DESC
+            """,
+            params,
+        ).fetchall()
+        by_source: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            source_id = row["source_id"]
+            health = by_source.setdefault(
+                source_id,
+                {
+                    "source": source_id,
+                    "source_name": row["source_name"],
+                    "recent_runs": 0,
+                    "recent_successes": 0,
+                    "recent_failures": 0,
+                    "recent_fetched": 0,
+                    "recent_inserted": 0,
+                    "recent_existing": 0,
+                    "last_status": row["status"],
+                    "last_error": row["error"] or "",
+                    "last_started_at": row["started_at"],
+                    "last_finished_at": row["finished_at"],
+                    "last_checked_at": row["created_at"],
+                },
+            )
+            if health["recent_runs"] >= recent_runs:
+                continue
+            health["recent_runs"] += 1
+            health["recent_fetched"] += int(row["fetched"])
+            health["recent_inserted"] += int(row["inserted"])
+            health["recent_existing"] += int(row["existing"])
+            if row["status"] == "success":
+                health["recent_successes"] += 1
+            else:
+                health["recent_failures"] += 1
+        return list(by_source.values())
 
     def list_stories(self, limit: int = 20, query: str = "") -> list[dict[str, Any]]:
         params: list[Any] = []
@@ -566,6 +665,18 @@ def _json_load(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def merge_unique_values(existing: list[Any], incoming: list[Any]) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for value in existing + incoming:
+        key = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(value)
+    return merged
 
 
 def story_from_row(row: sqlite3.Row) -> dict[str, Any]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from email.message import EmailMessage
 from typing import Any
 import os
+import re
 import smtplib
 
 
@@ -28,8 +29,7 @@ class EmailDelivery:
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "EmailDelivery":
         config = settings.get("delivery", {}).get("email", {})
-        password_env = config.get("password_env", "NEWSAGENT_SMTP_PASSWORD")
-        password = os.environ.get(password_env, config.get("password", ""))
+        password = resolve_email_password(config)
         return cls(
             host=config.get("host", ""),
             port=int(config.get("port", 587)),
@@ -42,14 +42,13 @@ class EmailDelivery:
 
     @staticmethod
     def is_configured(config: dict[str, Any]) -> bool:
-        password_env = config.get("password_env", "NEWSAGENT_SMTP_PASSWORD")
         return bool(
             config.get("enabled")
             and config.get("host")
             and config.get("username")
             and config.get("sender", config.get("username"))
             and config.get("recipients")
-            and (config.get("password") or os.environ.get(password_env))
+            and resolve_email_password(config)
         )
 
     def send(self, subject: str, body: str) -> dict[str, Any]:
@@ -82,3 +81,17 @@ class EmailDelivery:
             if not value:
                 missing.append(field)
         return missing
+
+
+def resolve_email_password(config: dict[str, Any]) -> str:
+    password_value = str(config.get("password", "") or "")
+    password_env = str(config.get("password_env", "") or "")
+    if not password_env and looks_like_env_var(password_value):
+        password_env = password_value
+        password_value = ""
+    password_env = password_env or "NEWSAGENT_SMTP_PASSWORD"
+    return os.environ.get(password_env, password_value)
+
+
+def looks_like_env_var(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9_]{4,}", value.strip()))
