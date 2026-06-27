@@ -22,7 +22,7 @@
   "briefing": {
     "max_stories": 65,
     "min_stories": 8,
-    "use_llm": false,
+    "use_llm": true,
     "lookback_hours": 48
   },
   "translation": {
@@ -31,17 +31,14 @@
   },
   "delivery": {
     "email": {
-      "enabled": false,
+      "enabled": true,
       "host": "smtp.gmail.com",
       "port": 587,
       "use_tls": true,
-      "username": "",
-      "password": "",
-      "password_env": "NEWSAGENT_SMTP_PASSWORD",
-      "sender": "",
-      "recipients": [
-        "you@example.com"
-      ]
+      "username": "you@example.com",
+      "password": "NEWSAGENT_SMTP_PASSWORD",
+      "sender": "you@example.com",
+      "recipients": ["you@example.com"]
     }
   },
   "retention": {
@@ -50,8 +47,6 @@
     "briefing_retention_days": 1825,
     "market_snapshot_retention_days": 1095,
     "delivery_log_retention_days": 90,
-    "pipeline_log_retention_days": 90,
-    "source_collection_log_retention_days": 90,
     "llm_run_retention_days": 30
   }
 }

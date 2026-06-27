@@ -27,14 +27,19 @@ The app also works without Ollama by using a deterministic fallback summary.
 ## Quick start
 
 ```powershell
+python -m newsagent init-config
 python -m newsagent doctor
 python -m newsagent init-db
+python -m newsagent secrets-scan
 python -m newsagent collect --limit 30
+python -m newsagent source-health
 python -m newsagent brief --output-language zh
-python -m newsagent ask "AIインフラに関する最新の重要なニュースは何ですか？" --language ja
+python -m newsagent ask "What are the most important AI infrastructure stories?" --language en
 ```
 
-Data is stored in `data/newsagent.db`.
+`init-config` creates `config/settings.json` from
+`config/settings.example.json` if it does not already exist. Other commands also
+create it automatically on first run. Data is stored in `data/newsagent.db`.
 
 Brief output supports four modes:
 
@@ -83,7 +88,7 @@ Feedback affects future ranking:
 
 ## Email delivery
 
-Edit `config/settings.json`:
+Edit `config/settings.json` and keep secrets in environment variables:
 
 ```json
 {
@@ -106,6 +111,12 @@ Set the SMTP password in the shell:
 
 ```powershell
 $env:NEWSAGENT_SMTP_PASSWORD = "your-smtp-app-password"
+```
+
+Run the local secret preflight before enabling email automation:
+
+```powershell
+python -m newsagent secrets-scan
 ```
 
 Generate and send a daily brief:
@@ -157,17 +168,19 @@ python -m newsagent daily --output-language zh --email
 
 ## Development and testing
 
-The MVP uses only the Python standard library. Run the automated test suite with:
+The MVP uses only the Python standard library. Run the automated test suite and
+local security preflight with:
 
 ```powershell
 python -m unittest discover -s tests -v
+python -m newsagent secrets-scan
 ```
 
 Useful project docs:
 
 - `docs/IMPLEMENTATION_STATUS.md`: current implemented, partial, and planned scope.
 - `docs/OPERATIONS.md`: local runbook for daily runs, email, logs, and troubleshooting.
-- `docs/TEST_LIST.md`: full manual and automated quality checklist.
+- `docs/DAILY_BRIEF_SELECTION_LOGIC.md`: how stories are selected for daily briefs.
 
 ## Add a source
 
