@@ -5,6 +5,7 @@ from newsagent.models import Source
 from .base import Collector, CollectorError
 from .cctv import CCTVXinwenLianboCollector
 from .github import GitHubSearchCollector
+from .html_listing import HTMLListingCollector
 from .huggingface import HuggingFaceModelsCollector
 from .market import YahooQuotesCollector
 from .rss import RSSCollector
@@ -13,6 +14,8 @@ from .rss import RSSCollector
 def build_collector(source: Source) -> Collector:
     if source.kind == "rss":
         return RSSCollector(source)
+    if source.kind == "html_listing":
+        return HTMLListingCollector(source)
     if source.kind == "cctv_xinwen_lianbo":
         return CCTVXinwenLianboCollector(source)
     if source.kind == "github_search":

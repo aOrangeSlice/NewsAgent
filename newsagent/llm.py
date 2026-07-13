@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import html
 import json
 import re
+
+from .medical import is_medical_story, medical_signal_score
 
 
 WORLD_REGION_LABELS = {
@@ -355,7 +358,14 @@ Group market data into global indices, US sectors, international sectors by regi
 For global indices, include all available items from the configured major index universe, up to 10.
 Do not place equity sector ETFs or sector indices in commodities/FX.
 Group mainstream media by region and list up to 5 important stories per region.
-Always include a medical/health section with 5 high-signal items when available; if evidence is sparse, write watch items instead of saying there is no evidence.
+Stories with `briefing_repeat_backfill: true` are previously covered items. Never
+place them in the regional Top 5, medical, or AI/technology core sections. List
+them only after the core sections under `## Earlier coverage / repeat backfill`.
+Always include a medical/health section with up to 10 high-signal items when available; if evidence is sparse, write watch items instead of saying there is no evidence.
+For AI/technology, list up to 10 items and rotate across source domains whenever
+multiple sources are available.
+Use the section headings `## Medical and health — Top 10` and
+`## AI and technology — Top 10`.
 
 Evidence JSON:
 {evidence}
@@ -554,8 +564,8 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "### International sectors by region": "### 国际行业板块（按地区）",
             "### Commodities and FX": "### 商品与外汇",
             "## Important mainstream news by region — Top 5": "## 各地区主流媒体重要新闻 Top 5",
-            "## Medical and health — Top 5": "## 医疗与健康资讯 Top 5",
-            "## AI and technology": "## AI 与科技",
+            "## Medical and health — Top 10": "## 医疗与健康资讯 Top 10",
+            "## AI and technology — Top 10": "## AI 与科技 Top 10",
             "## Selection logic": "## 判断逻辑",
             "## Sources": "## 来源",
             "### Europe": "### 欧洲",
@@ -579,8 +589,8 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "### International sectors by region": "### 地域別の国際セクター",
             "### Commodities and FX": "### 商品・為替",
             "## Important mainstream news by region — Top 5": "## 地域別の主要ニュース Top 5",
-            "## Medical and health — Top 5": "## 医療・ヘルスケア Top 5",
-            "## AI and technology": "## AI・テクノロジー",
+            "## Medical and health — Top 10": "## 医療・ヘルスケア Top 10",
+            "## AI and technology — Top 10": "## AI・テクノロジー Top 10",
             "## Selection logic": "## 選定ロジック",
             "## Sources": "## 情報源",
             "### Europe": "### 欧州",
@@ -902,9 +912,11 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
         reverse=True,
     )
     market_groups = group_market_stories(market)
-    world_news = [s for s in stories if s["category"] == "world_news" and not is_obviously_stale(s)]
-    medical = select_medical_stories(stories)
-    ai_tech = [s for s in stories if s["category"] in {"ai", "ai_engineering", "ai_hardware"}]
+    repeat_backfill = [story for story in stories if story.get("briefing_repeat_backfill")]
+    core_stories = [story for story in stories if not story.get("briefing_repeat_backfill")]
+    world_news = [s for s in core_stories if s["category"] == "world_news" and not is_obviously_stale(s)]
+    medical = select_medical_stories(core_stories)
+    ai_tech = select_ai_technology_stories(core_stories)
 
     lines = [title]
 
@@ -927,9 +939,9 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
             source_label = "Source:" if original else "来源："
             lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
 
-    lines.extend(["", "## Medical and health — Top 5" if original else "## 医疗与健康资讯 Top 5"])
+    lines.extend(["", "## Medical and health — Top 10" if original else "## 医疗与健康资讯 Top 10"])
     if medical:
-        for story in medical[:5]:
+        for story in medical[:10]:
             summary = clean_summary(story.get("summary") or ("High-ranking item from a medical, public-health, or regulatory source." if original else "来自医疗、公共卫生或监管来源的高排序条目。"))
             source_label = "Source:" if original else "来源："
             lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
@@ -941,9 +953,16 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
         )
 
     if ai_tech:
-        lines.extend(["", "## AI and technology" if original else "## AI 与科技"])
-        for story in ai_tech[:8]:
+        lines.extend(["", "## AI and technology — Top 10" if original else "## AI 与科技 Top 10"])
+        for story in ai_tech:
             summary = clean_summary(story.get("summary") or ("High-ranking item from an AI or technology source." if original else "来自 AI/科技来源的高排序条目。"))
+            source_label = "Source:" if original else "来源："
+            lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
+
+    if repeat_backfill:
+        lines.extend(["", "## Earlier coverage / repeat backfill" if original else "## 历史跟进与重复内容补位"])
+        for story in repeat_backfill:
+            summary = clean_summary(story.get("summary") or ("Previously covered item retained to preserve briefing coverage." if original else "此前已推送的内容，仅在本轮用于补足简报覆盖。"))
             source_label = "Source:" if original else "来源："
             lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
 
@@ -1138,12 +1157,49 @@ def market_region_label_zh(region: str) -> str:
 
 
 def select_medical_stories(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result = []
-    for story in stories:
-        tags = set(str(tag).lower() for tag in story.get("tags", []))
-        if story.get("category") == "medicine" or tags.intersection({"medicine", "medical", "health", "journal", "clinical"}):
+    result = [story for story in stories if is_medical_story(story)]
+    return unique_by_source(sorted(result, key=medical_signal_score, reverse=True))
+
+
+def select_ai_technology_stories(stories: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+    candidates = [
+        story
+        for story in stories
+        if story.get("category") in {"ai", "ai_engineering", "ai_hardware"}
+    ]
+    return diversify_by_source_domain(candidates, limit)
+
+
+def diversify_by_source_domain(stories: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    result: list[dict[str, Any]] = []
+    selected: set[int] = set()
+    source_counts: dict[str, int] = {}
+    max_per_source = 1
+    while len(result) < limit and len(selected) < len(stories):
+        added = False
+        for index, story in enumerate(stories):
+            if index in selected:
+                continue
+            source = source_domain(story)
+            if source_counts.get(source, 0) >= max_per_source:
+                continue
+            selected.add(index)
+            source_counts[source] = source_counts.get(source, 0) + 1
             result.append(story)
-    return unique_by_source(result)
+            added = True
+            if len(result) >= limit:
+                break
+        if not added:
+            max_per_source += 1
+    return result
+
+
+def source_domain(story: dict[str, Any]) -> str:
+    source = first_source(story)
+    host = urlparse(source).netloc.lower().removeprefix("www.")
+    return host or source.lower() or str(story.get("id", ""))
 
 
 def clean_summary(text: str, max_chars: int = 360) -> str:

@@ -1,6 +1,6 @@
 {
   "user": {
-    "default_language": "zh",
+    "default_language": "original",
     "timezone": "Asia/Tokyo",
     "push_time": "08:00"
   },
@@ -20,7 +20,7 @@
     "per_source_limit": 40
   },
   "briefing": {
-    "max_stories": 65,
+    "max_stories": 75,
     "min_stories": 8,
     "use_llm": true,
     "lookback_hours": 48

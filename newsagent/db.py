@@ -529,6 +529,26 @@ class Database:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def list_story_briefing_counts(self) -> dict[int, int]:
+        rows = self.conn.execute(
+            """
+            SELECT id, briefing_group, story_ids_json
+            FROM briefings
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        story_groups: dict[int, set[str]] = {}
+        for row in rows:
+            group = row["briefing_group"] or f"briefing:{row['id']}"
+            story_ids = _json_load(row["story_ids_json"], [])
+            if not isinstance(story_ids, list):
+                continue
+            for story_id in story_ids:
+                if not str(story_id).isdigit():
+                    continue
+                story_groups.setdefault(int(story_id), set()).add(group)
+        return {story_id: len(groups) for story_id, groups in story_groups.items()}
+
     def save_feedback(self, story_id: int, feedback: str, note: str = "") -> int:
         cur = self.conn.execute(
             "INSERT INTO feedback (story_id, feedback, note, created_at) VALUES (?, ?, ?, ?)",

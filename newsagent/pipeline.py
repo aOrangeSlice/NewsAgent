@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from .collectors import build_collector
@@ -10,6 +11,14 @@ from .config import ROOT, load_settings, load_sources
 from .db import Database
 from .delivery import EmailDelivery
 from .llm import Summarizer, normalize_output_language
+from .medical import (
+    MEDICAL_FOCUS_TERMS,
+    MEDICAL_RECALL_QUERY,
+    is_high_signal_medical_story,
+    is_medical_story,
+    medical_signal_score,
+    term_matches,
+)
 from .models import tokyo_now_iso
 from .ranking import parse_dt, score_raw_item
 from .security import scan_for_secrets
@@ -141,7 +150,7 @@ class NewsAgentApp:
             or language
             or self.settings.get("user", {}).get("default_language", "zh")
         )
-        max_stories = limit or int(briefing_settings.get("max_stories", 65))
+        max_stories = limit or int(briefing_settings.get("max_stories", 75))
         stories = self._select_stories(max_stories)
         variants = self._save_briefing_variants(stories, selected_language)
         preferred = select_preferred_variant(
@@ -211,7 +220,7 @@ class NewsAgentApp:
             or self.settings.get("user", {}).get("default_language", "zh")
         )
         briefing_settings = self.settings.get("briefing", {})
-        max_stories = brief_limit or int(briefing_settings.get("max_stories", 65))
+        max_stories = brief_limit or int(briefing_settings.get("max_stories", 75))
         stories = self._select_stories(max_stories)
         variants = self._save_briefing_variants(stories, selected_language)
         preferred = select_preferred_variant(
@@ -290,14 +299,26 @@ class NewsAgentApp:
             + self.db.list_stories(limit=80, query="market stock_index sector oil fx")
             + self.db.list_stories(limit=300, query="mainstream world europe china us japan korea globaltimes cctv cgtn xinhua bbc npr nhk yonhap")
             + self.db.list_stories(limit=80, query="china cctv cgtn xinhua globaltimes youtube video official xinwen_lianbo")
-            + self.db.list_stories(limit=80, query="medicine medical health journal fda who lancet nejm jama nature digital_medicine digital_health regulation clinical")
+            + self.db.list_stories(limit=80, query=MEDICAL_RECALL_QUERY)
             + self.db.list_stories(limit=candidate_limit)
         )
+        story_counts = (
+            self.db.list_story_briefing_counts()
+            if hasattr(self.db, "list_story_briefing_counts")
+            else {}
+        )
+        max_repeats = int(briefing_settings.get("max_briefing_repeats", 2))
         candidates = filter_recent_news(
             candidates,
             lookback_hours=int(briefing_settings.get("lookback_hours", 48)),
         )
-        return select_briefing_stories(candidates, max_stories=max_stories)
+        return select_briefing_stories(
+            candidates,
+            max_stories=max_stories,
+            story_briefing_counts=story_counts,
+            max_briefing_repeats=max_repeats,
+            repeat_backfill_limit=int(briefing_settings.get("repeat_backfill_limit", 5)),
+        )
 
     def send_email(
         self,
@@ -410,10 +431,14 @@ class NewsAgentApp:
 
 def select_briefing_stories(
     candidates: list[dict[str, Any]],
-    max_stories: int = 65,
+    max_stories: int = 75,
+    story_briefing_counts: dict[int, int] | None = None,
+    max_briefing_repeats: int = 2,
+    repeat_backfill_limit: int = 5,
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     seen: set[int] = set()
+    story_counts = story_briefing_counts or {}
 
     def add(story: dict[str, Any]) -> None:
         story_id = int(story["id"])
@@ -422,23 +447,42 @@ def select_briefing_stories(
         seen.add(story_id)
         selected.append(story)
 
+    fresh_candidates = [
+        story
+        for story in candidates
+        if story.get("category") == "market"
+        or story_counts.get(int(story["id"]), 0) < max_briefing_repeats
+    ]
+    repeat_candidates = [
+        story
+        for story in candidates
+        if story.get("category") != "market"
+        and story_counts.get(int(story["id"]), 0) >= max_briefing_repeats
+    ]
+
     market_quota = min(45, max(12, max_stories // 2))
-    medicine_quota = min(5, max(0, max_stories // 12))
-    ai_quota = min(5, max(0, max_stories // 12))
+    specialty_quota = min(10, max(0, max_stories // 7))
+    medicine_quota = specialty_quota
+    ai_quota = specialty_quota
     world_quota = max(0, max_stories - market_quota - medicine_quota - ai_quota)
 
-    market = prioritize_market_stories([s for s in candidates if s.get("category") == "market"])
+    market = prioritize_market_stories([s for s in fresh_candidates if s.get("category") == "market"])
     for story in market[:market_quota]:
         add(story)
 
     world_added = 0
     world_news = sort_by_freshness_and_score(
-        [s for s in candidates if s.get("category") == "world_news"]
+        [s for s in fresh_candidates if s.get("category") == "world_news"]
     )
     for region in WORLD_REGIONS:
         if world_added >= world_quota:
             break
-        for story in [s for s in world_news if s.get("region") == region and not is_stale_world_story(s)][:5]:
+        region_candidates = [
+            s
+            for s in world_news
+            if s.get("region") == region and not is_stale_world_story(s)
+        ]
+        for story in diversify_by_source(region_candidates, limit=5):
             if world_added >= world_quota:
                 break
             before = len(selected)
@@ -446,26 +490,41 @@ def select_briefing_stories(
             if len(selected) > before:
                 world_added += 1
 
-    medicine = sort_by_freshness_and_score([s for s in candidates if s.get("category") == "medicine"])
-    policy_medical = sort_by_freshness_and_score([
+    medicine = [s for s in fresh_candidates if s.get("category") == "medicine"]
+    policy_medical = [
         s
-        for s in candidates
-        if s.get("category") == "policy"
-        and ("medicine" in s.get("tags", []) or "medical" in s.get("tags", []) or "health" in s.get("tags", []))
-    ])
-    for story in (medicine + policy_medical)[:medicine_quota]:
+        for s in fresh_candidates
+        if s.get("category") == "policy" and is_medical_story(s)
+    ]
+    medical_priority = sort_medical_stories(medicine + policy_medical)
+    medical_candidates = [
+        s
+        for s in medical_priority
+        if is_high_signal_medical_story(s)
+    ]
+    for story in diversify_by_source(medical_candidates, limit=medicine_quota):
         add(story)
 
     ai_tech = sort_by_freshness_and_score(
-        [s for s in candidates if s.get("category") in {"ai", "ai_engineering", "ai_hardware"}]
+        [s for s in fresh_candidates if s.get("category") in {"ai", "ai_engineering", "ai_hardware"}]
     )
-    for story in ai_tech[:ai_quota]:
+    for story in diversify_by_source(ai_tech, limit=ai_quota):
         add(story)
 
-    for story in sort_by_freshness_and_score(candidates):
+    for story in sort_by_freshness_and_score(fresh_candidates):
         add(story)
         if len(selected) >= max_stories:
             break
+    repeat_added = 0
+    for story in sort_by_freshness_and_score(repeat_candidates):
+        if repeat_added >= repeat_backfill_limit or len(selected) >= max_stories:
+            break
+        before = len(selected)
+        # Keep repeated stories available to preserve briefing volume, but mark
+        # them so renderers do not present them as new items in core sections.
+        add({**story, "briefing_repeat_backfill": True})
+        if len(selected) > before:
+            repeat_added += 1
     return selected
 
 
@@ -554,6 +613,54 @@ def unique_market_stories_by_source(stories: list[dict[str, Any]]) -> list[dict[
 
 def sort_by_freshness_and_score(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(stories, key=freshness_score_key, reverse=True)
+
+
+def diversify_by_source(stories: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    result: list[dict[str, Any]] = []
+    selected: set[int] = set()
+    source_counts: dict[str, int] = {}
+    max_per_source = 1
+    while len(result) < limit and len(selected) < len(stories):
+        added = False
+        for story in stories:
+            story_id = int(story["id"])
+            if story_id in selected:
+                continue
+            source = source_key(story)
+            if source_counts.get(source, 0) >= max_per_source:
+                continue
+            result.append(story)
+            selected.add(story_id)
+            source_counts[source] = source_counts.get(source, 0) + 1
+            added = True
+            if len(result) >= limit:
+                break
+        if not added:
+            max_per_source += 1
+    return result
+
+
+def source_key(story: dict[str, Any]) -> str:
+    urls = story.get("source_urls") or []
+    if urls:
+        host = urlparse(str(urls[0])).netloc.lower()
+        return host.removeprefix("www.") or str(urls[0]).lower()
+    return str(story.get("cluster_key") or story.get("title") or story.get("id"))
+
+
+def sort_medical_stories(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(stories, key=medical_priority_key, reverse=True)
+
+
+def medical_priority_key(story: dict[str, Any]) -> tuple[int, float, float]:
+    timestamp, score = freshness_score_key(story)
+    return (
+        medical_signal_score(story),
+        timestamp,
+        score,
+    )
 
 
 def freshness_score_key(story: dict[str, Any]) -> tuple[float, float]:
@@ -663,6 +770,8 @@ def expand_query(question: str) -> str:
     text = question.strip()
     lower = text.lower()
     expansions: list[str] = []
+    if any(term_matches(term, lower) for term in MEDICAL_FOCUS_TERMS):
+        expansions.append(MEDICAL_RECALL_QUERY)
     if any(token in lower for token in ["ai chip", "gpu", "semiconductor", "data center", "infrastructure", "芯片", "算力", "数据中心"]):
         expansions.extend(
             [
@@ -680,7 +789,7 @@ def expand_query(question: str) -> str:
             ]
         )
     if any(token in lower for token in ["medicine", "health", "medical", "clinical", "医学", "医疗", "药物", "临床", "健康"]):
-        expansions.extend(["medicine", "health", "medical", "journal", "regulation", "clinical"])
+        expansions.append(MEDICAL_RECALL_QUERY)
     if any(token in lower for token in ["policy", "regulation", "government", "政策", "监管"]):
         expansions.extend(["policy", "regulation", "government"])
     if any(token in lower for token in ["market", "fx", "oil", "usd", "jpy", "市场", "油价", "汇率", "美元", "日元"]):

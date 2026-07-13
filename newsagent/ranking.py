@@ -5,6 +5,8 @@ from email.utils import parsedate_to_datetime
 import json
 import sqlite3
 
+from .medical import MEDICAL_FOCUS_TERMS
+
 
 PRIORITY_WEIGHT = {"P0": 40, "P1": 20, "P2": 5}
 CATEGORY_WEIGHT = {
@@ -55,12 +57,29 @@ HIGH_IMPACT_TERMS = [
     "trial",
     "digital health",
     "digital medicine",
+    "machine learning",
+    "cognition",
+    "cognitive",
+    "neuroscience",
+    "neurology",
+    "neural",
+    "nervous system",
+    "motor system",
+    "motor function",
+    "认知",
+    "运动系统",
+    "神经系统",
+    "人工智能",
     "jama",
     "nature medicine",
     "cctv",
     "cgtn",
     "xinhua",
 ]
+
+for term in MEDICAL_FOCUS_TERMS:
+    if term not in HIGH_IMPACT_TERMS:
+        HIGH_IMPACT_TERMS.append(term)
 
 
 def score_raw_item(row: sqlite3.Row) -> float:

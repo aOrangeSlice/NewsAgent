@@ -1,0 +1,11 @@
+services:
+  newsagent:
+    build:
+      context: .
+    image: newsagent:local
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["doctor"]

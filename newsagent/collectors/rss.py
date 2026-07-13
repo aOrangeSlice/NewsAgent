@@ -69,7 +69,7 @@ class RSSCollector(Collector):
         if not items:
             items = children_by_local_name(root, "entry")
         results = []
-        for feed_rank, entry in enumerate(items[:limit], start=1):
+        for feed_rank, entry in enumerate(items, start=1):
             title = child_text(entry, ["title"])
             link = child_text(entry, ["link"])
             if not link:
@@ -78,14 +78,42 @@ class RSSCollector(Collector):
             if not summary:
                 summary = descendant_text(entry, ["description", "summary", "content", "encoded"])
             published = child_text(entry, ["pubDate", "published", "updated", "date"])
-            if title and link:
-                results.append(
-                    self.item(
-                        title=strip_html(title),
-                        url=link,
-                        summary=strip_html(summary),
-                        published_at=parse_date(published),
-                        metrics={"feed_rank": feed_rank},
-                    )
+            clean_title = strip_html(title)
+            clean_summary = strip_html(summary)
+            if not clean_title or not link:
+                continue
+            if not keyword_filter_allows(
+                clean_title,
+                clean_summary,
+                include_keywords=self.source.extra.get("include_keywords", []),
+                exclude_keywords=self.source.extra.get("exclude_keywords", []),
+            ):
+                continue
+            results.append(
+                self.item(
+                    title=clean_title,
+                    url=link,
+                    summary=clean_summary,
+                    published_at=parse_date(published),
+                    metrics={"feed_rank": feed_rank},
                 )
+            )
+            if len(results) >= limit:
+                break
         return results
+
+
+def keyword_filter_allows(
+    title: str,
+    summary: str = "",
+    include_keywords: list[str] | None = None,
+    exclude_keywords: list[str] | None = None,
+) -> bool:
+    text = f"{title} {summary}".lower()
+    includes = [keyword.lower() for keyword in include_keywords or [] if keyword]
+    excludes = [keyword.lower() for keyword in exclude_keywords or [] if keyword]
+    if includes and not any(keyword in text for keyword in includes):
+        return False
+    if excludes and any(keyword in text for keyword in excludes):
+        return False
+    return True

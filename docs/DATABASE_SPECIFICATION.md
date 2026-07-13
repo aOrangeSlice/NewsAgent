@@ -2,7 +2,7 @@
 
 Generated from the current SQLite database at `data/newsagent.db` and the database access layer in `newsagent/db.py`.
 
-Last inspected: 2026-06-27
+Last inspected: 2026-07-12
 
 ## 1. Purpose
 
@@ -205,6 +205,8 @@ Application behavior:
 - Daily briefing creation saves two variants for the same story selection: `rules` and `llm`.
 - Both variants share the same `briefing_group`.
 - `body` is the final output language body. `canonical_body` preserves the canonical body when translation is requested.
+- Repeat handling for future briefings reads `story_ids_json` and counts distinct `briefing_group` values per story. Non-market stories that have appeared in 2 groups are excluded from normal section slots and used only as limited final backfill. Repeated world-news backfill is rendered outside the regional Top 5, under a separate earlier-coverage section. Market stories are treated as daily snapshots and are exempt.
+- Older rows without `briefing_group` are treated as one independent group per briefing row. No additional history table or schema migration is required for the repeat-handling rule.
 
 ### 6.5 `feedback`
 
@@ -353,7 +355,7 @@ SQLite also creates automatic indexes for primary keys and unique constraints, i
 | `raw_items.source_id` | `sources.id` | Text source id | Not enforced by SQLite. |
 | `raw_items.cluster_key` | `story_clusters.cluster_key` | Cluster key | Used to detect unclustered or refreshed raw items. |
 | `story_clusters.item_ids_json` | `raw_items.id` | JSON array | Application code parses this to attach latest raw metadata. |
-| `briefings.story_ids_json` | `story_clusters.id` | JSON array | Captures selected stories for a briefing. |
+| `briefings.story_ids_json` | `story_clusters.id` | JSON array | Captures selected stories for a briefing; parsed with `briefing_group` to count previous selections. |
 | `feedback.story_id` | `story_clusters.id` | Integer id | Used by ranking feedback adjustment. |
 | `pipeline_logs.run_id` | `source_collection_logs.run_id` | Text run id | Correlates run-level and per-source logs. |
 
@@ -372,6 +374,8 @@ Factors include:
 - URL and summary presence
 
 User feedback is applied at query time, not written back into `story_clusters.score`.
+
+Briefing selection also uses saved briefing history at query time. The application parses existing `briefings.story_ids_json`, deduplicates records by `briefing_group`, keeps repeated non-market stories out of normal section slots, and allows a small number as final backfill when the brief would otherwise be short. Repeated `world_news` backfill is kept out of the rendered regional Top 5 and shown in a separate earlier-coverage section. This is an application-level rule and does not write back to `story_clusters`.
 
 ## 10. Migration Notes
 

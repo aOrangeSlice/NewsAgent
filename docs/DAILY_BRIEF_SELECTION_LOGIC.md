@@ -1,6 +1,6 @@
 # Daily Brief Selection Logic and Database Mapping
 
-Last updated: 2026-06-27
+Last updated: 2026-07-12
 
 Command covered:
 
@@ -80,14 +80,14 @@ python -m newsagent daily --output-language original --email
 
 ### 6. 最终筛选
 
-默认最多 65 条。当前配额大致是：市场约 32 条，主流国际新闻约 23 条，医学健康最多 5 条，AI/科技最多 5 条。
+默认最多 75 条。当前配额大致是：市场约 32 条，主流国际新闻约 23 条，医学健康最多 10 条，AI/科技最多 10 条。
 
 | 逻辑 | 生成结果 | 对应 DB 表 |
 |---|---|---|
 | 市场优先筛选 | 全球指数、商品外汇、美股行业、国际板块等 | 读取 `story_clusters` 和 `raw_items.metrics_json` |
-| 主流新闻分地区筛选 | Europe、China、United States、Japan、South Korea 各最多 5 条 | 读取 `story_clusters.region` |
-| 医学健康筛选 | 最多 5 条医学/健康内容 | 读取 `story_clusters.category`、`tags_json` |
-| AI/科技筛选 | 最多 5 条 AI/技术内容 | 读取 `story_clusters.category`、`tags_json` |
+| 主流新闻分地区筛选 | Europe、China、United States、Japan、South Korea 各最多 5 条；只展示新内容 | 读取 `story_clusters.region` |
+| 医学健康筛选 | 最多 10 条医学/健康内容 | 读取 `story_clusters.category`、`tags_json` |
+| AI/科技筛选 | 最多 10 条 AI/技术内容，多个来源可用时按来源域名轮换 | 读取 `story_clusters.category`、`tags_json` |
 | 最终入选 story id | 本次简报使用的 story id 列表 | 保存到 `briefings.story_ids_json` |
 
 详细筛选标准：
@@ -96,9 +96,9 @@ python -m newsagent daily --output-language original --email
 2. market 内容先进入，但受市场配额限制，默认约 32 条。
 3. market 内部先按品类排序：全球指数、商品/外汇、美股行业、国际板块、其他。
 4. world_news 先按 `published_at` 或 `retrieved_at` 新鲜度排序，再看 `score`。
-5. world_news 按地区分桶，Europe、China、United States、Japan、South Korea 每区最多 5 条。
-6. medicine 和 AI/科技分别保留最多 5 条，优先选择时间最新的候选。
-7. 如果还没达到 65 条，从剩余候选里按新鲜度和分数补齐。
+5. world_news 按地区分桶，Europe、China、United States、Japan、South Korea 每区最多 5 条。历史重复内容不进入各地区 Top 5；仅在简报最后的“历史跟进与重复内容补位”区域展示。
+6. medicine 和 AI/科技分别保留最多 10 条，优先选择时间最新的候选；多个来源可用时按来源域名轮换，只有来源不足时才由同一来源补足。
+7. 如果还没达到 75 条，从剩余候选里按新鲜度和分数补齐。
 8. 明显过旧或历史页面会被剔除，例如特定旧 China Daily/People 页面。
 9. market 不走 48 小时过滤，因为休市时仍应展示最新常规交易收盘数据。
 
@@ -195,14 +195,14 @@ python -m newsagent daily --output-language original --email
 
 ### 6. 最終選別
 
-既定では最大 65 件です。目安は、市場約 32 件、主流国際ニュース約 23 件、医療健康最大 5 件、AI/技術最大 5 件です。
+既定では最大 75 件です。目安は、市場約 32 件、主流国際ニュース約 23 件、医療健康最大 10 件、AI/技術最大 10 件です。
 
 | ロジック | 生成結果 | 対応 DB テーブル |
 |---|---|---|
 | 市場優先選別 | グローバル指数、商品/為替、米国セクター、国際セクターなど | `story_clusters`、`raw_items.metrics_json` |
-| 地域別ニュース選別 | Europe、China、United States、Japan、South Korea 各最大 5 件 | `story_clusters.region` |
-| 医療健康選別 | 最大 5 件 | `story_clusters.category`、`tags_json` |
-| AI/技術選別 | 最大 5 件 | `story_clusters.category`、`tags_json` |
+| 地域別ニュース選別 | Europe、China、United States、Japan、South Korea 各最大 5 件。新規項目のみ表示 | `story_clusters.region` |
+| 医療健康選別 | 最大 10 件 | `story_clusters.category`、`tags_json` |
+| AI/技術選別 | 最大 10 件。複数ソースがあればドメイン単位でローテーション | `story_clusters.category`、`tags_json` |
 | 採用 story id | 今回のブリーフで使う story id 一覧 | `briefings.story_ids_json` |
 
 詳細な選別基準：
@@ -211,9 +211,9 @@ python -m newsagent daily --output-language original --email
 2. market を先に入れるが、市場枠の上限を超えない。既定では約 32 件。
 3. market の中では、グローバル指数、商品/為替、米国セクター、国際セクター、その他の順に並べる。
 4. world_news は `published_at` または `retrieved_at` の鮮度を優先し、次に `score` を見る。
-5. world_news は地域別に分け、Europe、China、United States、Japan、South Korea それぞれ最大 5 件。
-6. medicine と AI/技術は、それぞれ最大 5 件で、鮮度の高い候補を優先する。
-7. 65 件に満たない場合は、残り候補から鮮度とスコアで補完する。
+5. world_news は地域別に分け、Europe、China、United States、Japan、South Korea それぞれ最大 5 件。過去に繰り返し掲載された項目は地域別 Top 5 に入れず、ブリーフ末尾の履歴フォロー/補完枠にのみ表示する。
+6. medicine と AI/技術は、それぞれ最大 10 件で、鮮度の高い候補を優先する。複数ソースがあればドメイン単位でローテーションし、ソースが足りない場合のみ同一ソースで補完する。
+7. 75 件に満たない場合は、残り候補から鮮度とスコアで補完する。
 8. 明らかに古い履歴ページは除外する。例：一部の古い China Daily/People ページ。
 9. market は 48 時間フィルタの対象外。休場時も最新の通常取引終値を表示するため。
 
@@ -310,27 +310,31 @@ Candidate retrieval generally starts with `score DESC, updated_at DESC`, then ap
 
 ### 6. Final Selection
 
-The default maximum is 65 items. Approximate quotas are: market about 32, mainstream international news about 23, medical and health up to 5, AI/technology up to 5.
+The default maximum is 75 items. Approximate quotas are: market about 32, mainstream international news about 23, medical and health up to 10, AI/technology up to 10.
 
 | Logic | Generated Result | DB Table |
 |---|---|---|
 | Market-first selection | Global indices, commodities/FX, U.S. sectors, international sectors | `story_clusters`, `raw_items.metrics_json` |
-| Regional news selection | Up to 5 each for Europe, China, United States, Japan, South Korea | `story_clusters.region` |
-| Medical and health selection | Up to 5 items | `story_clusters.category`, `tags_json` |
-| AI/technology selection | Up to 5 items | `story_clusters.category`, `tags_json` |
+| Regional news selection | Up to 5 fresh items each for Europe, China, United States, Japan, South Korea | `story_clusters.region` |
+| Medical and health selection | Up to 10 items | `story_clusters.category`, `tags_json` |
+| AI/technology selection | Up to 10 items, rotating across source domains when multiple sources are available | `story_clusters.category`, `tags_json` |
 | Selected story ids | Story ids used by this briefing | `briefings.story_ids_json` |
+| Repeat handling | Non-market stories already selected in 2 distinct briefing groups are kept out of normal section slots and used only as limited final backfill | `briefings.story_ids_json`, `briefings.briefing_group` |
+| Source diversity | World-region, medicine, and AI/technology slots rotate across source domains where possible | `story_clusters.source_urls_json` |
 
 Detailed selection criteria:
 
 1. Deduplicate candidates by story id.
-2. Add market items first, up to the market quota, about 32 by default.
-3. Within market, use this category order: global indices, commodities/FX, U.S. sectors, international sectors, other.
-4. For world_news, sort first by `published_at` or `retrieved_at` freshness, then by `score`.
-5. Split world_news by region, with up to 5 each for Europe, China, United States, Japan, and South Korea.
-6. Add medicine and AI/technology items separately, each up to 5, preferring fresher candidates.
-7. If fewer than 65 items have been selected, fill from remaining candidates by freshness and score.
-8. Drop obviously stale historical pages, such as specific old China Daily/People pages.
-9. Exempt market from the 48-hour filter because closed markets still need the latest regular-session close.
+2. Before section selection, count previous appearances in `briefings.story_ids_json` by distinct `briefing_group`. Market stories are always treated as fresh daily snapshots. Non-market stories selected in 2 prior groups are excluded from normal section slots but remain available for limited final backfill. The `rules` and `llm` variants from the same run share one group and count once.
+3. Add market items first, up to the market quota, about 32 by default. Market is exempt from repeat limits so the Market overview remains present when market data is available.
+4. Within market, use this category order: global indices, commodities/FX, U.S. sectors, international sectors, other.
+5. For world_news, sort first by `published_at` or `retrieved_at` freshness, then by `score`.
+6. Split world_news by region, with up to 5 fresh items each for Europe, China, United States, Japan, and South Korea. Repeated backfill items never appear in a regional Top 5; they are rendered only in the final Earlier coverage / repeat backfill section. Each regional Top 5 rotates across source domains where possible; if only one source is available, the section still fills from that source.
+7. Add medicine and AI/technology items separately, each up to 10. These sections rotate across source domains where possible, while keeping the existing quality and freshness ordering; a single source fills remaining slots only when alternatives are unavailable.
+8. If fewer than 75 items have been selected, fill from fresh candidates by freshness and score.
+9. If the brief is still short, use repeated non-market stories as final backfill, capped at 5 by default, so volume is preserved without letting repeats dominate the main sections.
+10. Drop obviously stale historical pages, such as specific old China Daily/People pages.
+11. Exempt market from the 48-hour filter because closed markets still need the latest regular-session close.
 
 ### 7. Brief Output
 

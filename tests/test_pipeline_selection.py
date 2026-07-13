@@ -1,6 +1,10 @@
 import unittest
+import uuid
+from pathlib import Path
 
-from newsagent.pipeline import NewsAgentApp, select_briefing_stories
+from newsagent.db import Database
+from newsagent.llm import fallback_briefing
+from newsagent.pipeline import NewsAgentApp, expand_query, select_briefing_stories
 
 
 def story(story_id, category, title, **extra):
@@ -40,6 +44,42 @@ class FakeDB:
         if query == "market stock_index sector oil fx":
             return self.noisy_market_query[:limit]
         return []
+
+    def list_story_briefing_counts(self):
+        return {}
+
+
+class RepeatHistoryDB:
+    def list_stories_by_category(self, category, limit=20, unique_by_source=False):
+        return []
+
+    def list_stories(self, limit=20, query=""):
+        return [
+            story(10, "world_news", "Already repeated", region="europe"),
+            story(11, "world_news", "Still eligible", region="europe"),
+        ][:limit]
+
+    def list_story_briefing_counts(self):
+        return {10: 2, 11: 1}
+
+
+class RepeatedMarketDB:
+    def __init__(self):
+        self.market = [
+            story(1, "market", "S&P 500: 100.00 (0.10%)"),
+            story(2, "market", "Nasdaq Composite: 200.00 (0.20%)"),
+        ]
+
+    def list_stories_by_category(self, category, limit=20, unique_by_source=False):
+        if category == "market":
+            return self.market[:limit]
+        return []
+
+    def list_stories(self, limit=20, query=""):
+        return []
+
+    def list_story_briefing_counts(self):
+        return {1: 99, 2: 99}
 
 
 class PipelineSelectionTests(unittest.TestCase):
@@ -169,6 +209,317 @@ class PipelineSelectionTests(unittest.TestCase):
 
         self.assertIn("medicine", selected_categories)
         self.assertIn("ai", selected_categories)
+
+    def test_medical_slots_prioritize_authoritative_multi_source_and_focus_terms(self):
+        candidates = [
+            story(
+                400,
+                "medicine",
+                "Fresh weak single-source medical item",
+                score=999,
+                published_at="2026-06-27T03:00:00+00:00",
+                source_urls=["https://example.com/medical/400"],
+            ),
+            story(
+                401,
+                "medicine",
+                "Nature Medicine clinical study",
+                score=20,
+                published_at="2026-06-27T00:00:00+00:00",
+                tags=["medicine", "journal", "nature_medicine"],
+                source_urls=["https://www.nature.com/articles/s41591-026-00001-1"],
+            ),
+            story(
+                402,
+                "medicine",
+                "Multi-source health evidence update",
+                score=20,
+                published_at="2026-06-27T01:00:00+00:00",
+                source_urls=[
+                    "https://source-a.example/health/402",
+                    "https://source-b.example/health/402",
+                ],
+            ),
+            story(
+                403,
+                "medicine",
+                "AI cognition and nervous system rehabilitation study",
+                score=20,
+                published_at="2026-06-27T02:00:00+00:00",
+                source_urls=["https://example.com/medical/403"],
+            ),
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        selected_ids = [item["id"] for item in selected]
+
+        self.assertLess(selected_ids.index(401), selected_ids.index(400))
+        self.assertLess(selected_ids.index(402), selected_ids.index(400))
+        self.assertLess(selected_ids.index(403), selected_ids.index(400))
+
+    def test_medical_focus_terms_expand_question_query(self):
+        expanded = expand_query("神经系统 AI 和认知研究")
+
+        self.assertIn("medicine", expanded)
+        self.assertIn("nervous system", expanded)
+        self.assertIn("认知", expanded)
+
+    def test_story_briefing_counts_deduplicate_same_briefing_group(self):
+        path = Path(__file__).resolve().parent / f"briefing_counts_{uuid.uuid4().hex}.db"
+        db = Database(path)
+        try:
+            db.init()
+            db.save_briefing(
+                language="zh",
+                title="Rules",
+                body="body",
+                story_ids=[1, 2],
+                briefing_group="daily-1",
+                generation_mode="rules",
+            )
+            db.save_briefing(
+                language="zh",
+                title="LLM",
+                body="body",
+                story_ids=[1, 2],
+                briefing_group="daily-1",
+                generation_mode="llm",
+            )
+            db.save_briefing(
+                language="zh",
+                title="Rules",
+                body="body",
+                story_ids=[1],
+                briefing_group="daily-2",
+                generation_mode="rules",
+            )
+
+            self.assertEqual(db.list_story_briefing_counts(), {1: 2, 2: 1})
+        finally:
+            db.close()
+            path.unlink(missing_ok=True)
+
+    def test_select_stories_backfills_repeated_items_after_fresh_items(self):
+        app = NewsAgentApp.__new__(NewsAgentApp)
+        app.settings = {"briefing": {"lookback_hours": 0}}
+        app.db = RepeatHistoryDB()
+
+        selected = app._select_stories(10)
+        selected_ids = [item["id"] for item in selected]
+
+        self.assertEqual(selected_ids, [11, 10])
+
+    def test_repeated_market_items_are_kept_and_render_market_overview(self):
+        app = NewsAgentApp.__new__(NewsAgentApp)
+        app.settings = {"briefing": {"lookback_hours": 0}}
+        app.db = RepeatedMarketDB()
+
+        selected = app._select_stories(10)
+        selected_ids = [item["id"] for item in selected]
+        body = fallback_briefing(selected, "original")
+
+        self.assertEqual(selected_ids, [1, 2])
+        self.assertIn("## Market overview: global indices and sectors", body)
+        self.assertIn("S&P 500: 100.00 (0.10%)", body)
+
+    def test_repeated_non_market_items_do_not_enter_fresh_top_slots_when_fresh_is_enough(self):
+        candidates = [
+            story(
+                1200,
+                "world_news",
+                "Repeated high-score Europe story",
+                region="europe",
+                score=999,
+                published_at="2026-06-27T05:00:00+00:00",
+            )
+        ] + [
+            story(
+                1201 + index,
+                "world_news",
+                f"Fresh Europe story {index}",
+                region="europe",
+                score=10,
+                published_at=f"2026-06-27T0{index}:00:00+00:00",
+            )
+            for index in range(5)
+        ]
+
+        selected = select_briefing_stories(
+            candidates,
+            max_stories=5,
+            story_briefing_counts={1200: 2},
+        )
+
+        self.assertNotIn(1200, [item["id"] for item in selected])
+
+    def test_repeated_world_backfill_is_not_rendered_in_regional_top_five(self):
+        candidates = [
+            story(1250, "world_news", "Fresh Europe story", region="europe"),
+            story(1251, "world_news", "Repeated Europe story", region="europe"),
+        ]
+
+        selected = select_briefing_stories(
+            candidates,
+            max_stories=2,
+            story_briefing_counts={1251: 2},
+        )
+        body = fallback_briefing(selected, "original")
+        regional_section = body.split("## Important mainstream news by region — Top 5", 1)[1].split(
+            "## Earlier coverage / repeat backfill", 1
+        )[0]
+
+        self.assertIn("Fresh Europe story", regional_section)
+        self.assertNotIn("Repeated Europe story", regional_section)
+        self.assertIn("## Earlier coverage / repeat backfill", body)
+        self.assertIn("Repeated Europe story", body)
+
+    def test_repeated_backfill_is_limited_to_five_items(self):
+        candidates = [
+            story(
+                1300 + index,
+                "world_news",
+                f"Repeated story {index}",
+                region="europe",
+                score=100 - index,
+                published_at=f"2026-06-27T0{index}:00:00+00:00",
+            )
+            for index in range(8)
+        ]
+        counts = {item["id"]: 2 for item in candidates}
+
+        selected = select_briefing_stories(
+            candidates,
+            max_stories=10,
+            story_briefing_counts=counts,
+            repeat_backfill_limit=5,
+        )
+
+        self.assertEqual(len(selected), 5)
+        self.assertTrue(all(counts[item["id"]] >= 2 for item in selected))
+
+    def test_medical_section_diversifies_sources_when_possible(self):
+        candidates = [
+            story(
+                500 + index,
+                "medicine",
+                f"AI cognition study {index}",
+                published_at=f"2026-06-27T0{index}:00:00+00:00",
+                source_urls=[f"https://source-a.example/medical/{index}"],
+            )
+            for index in range(5)
+        ] + [
+            story(
+                600,
+                "medicine",
+                "AI cognition study from another source",
+                published_at="2026-06-27T00:30:00+00:00",
+                source_urls=["https://source-b.example/medical/600"],
+            )
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        medical_urls = [item["source_urls"][0] for item in selected[:5]]
+
+        self.assertTrue(any("source-b.example" in url for url in medical_urls))
+
+    def test_medical_section_renders_up_to_ten_items_when_only_one_source_is_available(self):
+        candidates = [
+            story(
+                700 + index,
+                "medicine",
+                f"AI cognition single-source study {index}",
+                published_at=f"2026-06-27T0{index}:00:00+00:00",
+                source_urls=[f"https://source-a.example/medical/{index}"],
+            )
+            for index in range(11)
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=75)
+        body = fallback_briefing(selected, "original")
+        medical_section = body.split("## Medical and health — Top 10", 1)[1].split("## Selection logic", 1)[0]
+
+        self.assertEqual(len([item for item in selected[:10] if item["category"] == "medicine"]), 10)
+        self.assertEqual(medical_section.count("- ["), 10)
+
+    def test_ai_section_diversifies_sources_when_possible(self):
+        candidates = [
+            story(
+                800 + index,
+                "ai",
+                f"AI platform story {index}",
+                published_at=f"2026-06-27T0{index}:00:00+00:00",
+                source_urls=[f"https://source-a.example/ai/{index}"],
+            )
+            for index in range(5)
+        ] + [
+            story(
+                900,
+                "ai",
+                "AI platform story from another source",
+                published_at="2026-06-27T00:30:00+00:00",
+                source_urls=["https://source-b.example/ai/900"],
+            )
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        ai_urls = [item["source_urls"][0] for item in selected[:5]]
+
+        self.assertTrue(any("source-b.example" in url for url in ai_urls))
+
+    def test_fallback_ai_section_rotates_sources_and_limits_to_ten_items(self):
+        stories = [
+            story(
+                950 + index,
+                "ai",
+                f"AI platform story {index}",
+                source_urls=[f"https://source-a.example/ai/{index}"],
+            )
+            for index in range(10)
+        ] + [
+            story(
+                960,
+                "ai",
+                "AI platform story from another source",
+                source_urls=["https://source-b.example/ai/960"],
+            )
+        ]
+
+        body = fallback_briefing(stories, "original")
+        ai_section = body.split("## AI and technology — Top 10", 1)[1].split("## Selection logic", 1)[0]
+
+        self.assertEqual(ai_section.count("- ["), 10)
+        self.assertIn("source-b.example", ai_section)
+        self.assertLess(
+            ai_section.index("source-b.example"),
+            ai_section.index("source-a.example/ai/1"),
+        )
+
+    def test_world_region_section_diversifies_sources_when_possible(self):
+        candidates = [
+            story(
+                1000 + index,
+                "world_news",
+                f"Europe story {index}",
+                region="europe",
+                published_at=f"2026-06-27T0{index}:00:00+00:00",
+                source_urls=[f"https://source-a.example/world/{index}"],
+            )
+            for index in range(5)
+        ] + [
+            story(
+                1100,
+                "world_news",
+                "Europe story from another source",
+                region="europe",
+                published_at="2026-06-27T00:30:00+00:00",
+                source_urls=["https://source-b.example/world/1100"],
+            )
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        world_urls = [item["source_urls"][0] for item in selected[:5]]
+
+        self.assertTrue(any("source-b.example" in url for url in world_urls))
 
 
 if __name__ == "__main__":

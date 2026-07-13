@@ -24,7 +24,7 @@
 
 ## Recommended local model
 
-Detected machine:
+Developer's machine:
 
 - AMD Ryzen 9 9950X, 16 cores / 32 threads.
 - 32 GB RAM.
@@ -33,6 +33,7 @@ Detected machine:
 Recommended default:
 
 - `qwen3:8b` through Ollama.
+
 
 Why:
 
