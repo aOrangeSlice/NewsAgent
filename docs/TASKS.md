@@ -30,22 +30,22 @@ Developer's machine:
 - 32 GB RAM.
 - NVIDIA GeForce RTX 5060 Ti, 16 GB VRAM.
 
-Recommended default:
+Recommended production default:
 
-- `qwen3:8b` through Ollama.
+- `qwen3:30bq3` through Ollama.
 
 
 Why:
 
 - Good Chinese, English, and Japanese coverage.
-- Fits comfortably in 16 GB VRAM with room for context.
-- Strong enough for summarization, routing, and structured output.
-- Faster and safer for MVP than jumping directly to 14B/20B.
+- The Q3_K_M quantization fits the current RTX 5060 Ti 16 GB setup and is
+  substantially faster in the controlled local test for this workload.
+- Keep `qwen3:8b` installed as an operational fallback when memory headroom or
+  output quality validation becomes a concern.
 
 Second-stage experiment:
 
-- Try `gpt-oss:20b` or a Qwen 14B quantized model for long-form analysis only.
-- Keep `qwen3:8b` for daily summaries if latency matters.
+- Try `gpt-oss:20b` or a Qwen 14B quantized model for comparison only.
 
 ## Next implementation tasks
 

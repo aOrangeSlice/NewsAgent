@@ -205,7 +205,7 @@ Application behavior:
 - Daily briefing creation saves two variants for the same story selection: `rules` and `llm`.
 - Both variants share the same `briefing_group`.
 - `body` is the final output language body. `canonical_body` preserves the canonical body when translation is requested.
-- Repeat handling for future briefings reads `story_ids_json` and counts distinct `briefing_group` values per story. Non-market stories that have appeared in 2 groups are excluded from normal section slots and used only as limited final backfill. Repeated world-news backfill is rendered outside the regional Top 5, under a separate earlier-coverage section. Market stories are treated as daily snapshots and are exempt.
+- Repeat handling for future briefings reads `story_ids_json` and counts distinct `briefing_group` values per story. Non-market stories that have appeared in 2 groups are normally excluded from core slots and used only as limited final backfill. To guarantee regional coverage, one recent repeated world-news story may remain in a region's Top 5 only when that region has no eligible fresh story; it is marked in memory as `regional_repeat_fallback`. Other repeated world-news items are rendered under the separate earlier-coverage section. Market stories are treated as daily snapshots and are exempt.
 - Older rows without `briefing_group` are treated as one independent group per briefing row. No additional history table or schema migration is required for the repeat-handling rule.
 
 ### 6.5 `feedback`
@@ -247,7 +247,7 @@ Stores telemetry for LLM calls.
 
 Current observed values:
 
-- Provider/model: `ollama` / `qwen3:8b`
+- Provider/model: `ollama` / `qwen3:30bq3`
 - `ok`: 111 successful runs and 7 failed runs
 
 ### 6.7 `delivery_logs`
@@ -375,7 +375,7 @@ Factors include:
 
 User feedback is applied at query time, not written back into `story_clusters.score`.
 
-Briefing selection also uses saved briefing history at query time. The application parses existing `briefings.story_ids_json`, deduplicates records by `briefing_group`, keeps repeated non-market stories out of normal section slots, and allows a small number as final backfill when the brief would otherwise be short. Repeated `world_news` backfill is kept out of the rendered regional Top 5 and shown in a separate earlier-coverage section. This is an application-level rule and does not write back to `story_clusters`.
+Briefing selection also uses saved briefing history at query time. The application parses existing `briefings.story_ids_json`, deduplicates records by `briefing_group`, keeps repeated non-market stories out of normal section slots, and allows a small number as final backfill when the brief would otherwise be short. Regional world news is retrieved in five independent freshness-first pools before the global score-ranked candidates are merged. If a region has recent candidates but no eligible fresh story, one repeated story is retained as an in-memory `regional_repeat_fallback`; other repeated world news stays in the separate earlier-coverage section. These application-level rules do not write back to `story_clusters`.
 
 ## 10. Migration Notes
 
@@ -415,7 +415,7 @@ Current story mix:
 
 Current operational profile:
 
-- LLM provider/model observed: `ollama` / `qwen3:8b`
+- LLM provider/model observed: `ollama` / `qwen3:30bq3`
 - LLM run outcomes observed: 111 successful, 7 failed
 - Source collection statuses observed: 153 `success`, 30 `failed`
 - Pipeline log levels observed: `INFO` (19), `WARNING` (31)

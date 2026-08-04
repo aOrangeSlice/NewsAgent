@@ -448,6 +448,32 @@ class Database:
                 break
         return unique_stories
 
+    def list_stories_by_category_region(
+        self,
+        category: str,
+        region: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return a freshness-first regional pool before global score truncation.
+
+        Regional daily-brief candidates must not compete in one global top-N
+        query. Otherwise a large or historically high-scoring region can crowd
+        every other region out before the publication-time cutoff is applied.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM story_clusters
+            WHERE category = ? AND region = ?
+            ORDER BY updated_at DESC, score DESC
+            LIMIT ?
+            """,
+            (category, region, limit),
+        ).fetchall()
+        stories = [story_from_row(row) for row in rows]
+        self._attach_latest_item_metadata(stories)
+        return stories
+
     def _attach_latest_item_metadata(self, stories: list[dict[str, Any]]) -> None:
         item_ids = {
             int(item_id)

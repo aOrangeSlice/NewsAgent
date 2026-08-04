@@ -11,7 +11,7 @@
     "mode": "local_first",
     "provider": "ollama",
     "base_url": "http://localhost:11434",
-    "model": "qwen3:8b",
+    "model": "qwen3:30bq3",
     "temperature": 0.2,
     "num_ctx": 8192,
     "cloud_fallback_enabled": false
@@ -20,10 +20,13 @@
     "per_source_limit": 40
   },
   "briefing": {
-    "max_stories": 75,
+    "max_stories": 90,
     "min_stories": 8,
     "use_llm": true,
-    "lookback_hours": 48
+    "lookback_hours": 48,
+    "regional_candidate_limit": 100,
+    "world_region_limit": 5,
+    "world_region_minimum": 1
   },
   "translation": {
     "enabled": true,

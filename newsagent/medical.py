@@ -22,10 +22,33 @@ MEDICAL_BASE_TERMS = [
     "clinical",
 ]
 
+MEDICAL_AGENT_TERMS = [
+    "ai agent",
+    "ai agents",
+    "agentic ai",
+    "agentic artificial intelligence",
+    "multi-agent",
+    "multiagent",
+    "autonomous agent",
+    "autonomous agents",
+]
+
 MEDICAL_FOCUS_TERMS = [
     "ai",
     "artificial intelligence",
+    *MEDICAL_AGENT_TERMS,
     "machine learning",
+    "deep learning",
+    "llm",
+    "large language model",
+    "large language models",
+    "mllm",
+    "multimodal large language model",
+    "foundation model",
+    "generative ai",
+    "generative artificial intelligence",
+    "rag",
+    "retrieval-augmented generation",
     "cognition",
     "cognitive",
     "neuroscience",
@@ -100,8 +123,11 @@ def medical_signal_score(story: dict[str, Any]) -> int:
     if story.get("category") == "medicine":
         score += 1
 
-    focus_hits = sum(1 for term in MEDICAL_FOCUS_TERMS if term_matches(term, medical_story_text(story)))
+    story_text = medical_story_text(story)
+    focus_hits = sum(1 for term in MEDICAL_FOCUS_TERMS if term_matches(term, story_text))
     score += min(focus_hits * 3, 6)
+    if any(term_matches(term, story_text) for term in MEDICAL_AGENT_TERMS):
+        score += 3
     return score
 
 

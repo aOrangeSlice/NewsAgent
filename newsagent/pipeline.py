@@ -25,6 +25,8 @@ from .security import scan_for_secrets
 
 
 WORLD_REGIONS = ["europe", "china", "us", "japan", "korea"]
+DEFAULT_WORLD_REGION_LIMIT = 5
+DEFAULT_WORLD_REGION_MINIMUM = 1
 
 
 class NewsAgentApp:
@@ -294,8 +296,26 @@ class NewsAgentApp:
     def _select_stories(self, max_stories: int) -> list[dict[str, Any]]:
         briefing_settings = self.settings.get("briefing", {})
         candidate_limit = max(max_stories * 3, 120)
+        regional_candidate_limit = int(
+            briefing_settings.get("regional_candidate_limit", 100)
+        )
+        regional_world_candidates: list[dict[str, Any]] = []
+        if hasattr(self.db, "list_stories_by_category_region"):
+            for region in WORLD_REGIONS:
+                regional_world_candidates.extend(
+                    self.db.list_stories_by_category_region(
+                        "world_news",
+                        region,
+                        limit=regional_candidate_limit,
+                    )
+                )
         candidates = merge_unique_stories(
-            self.db.list_stories_by_category("market", limit=80, unique_by_source=True)
+            regional_world_candidates
+            + self.db.list_stories_by_category("market", limit=80, unique_by_source=True)
+            + self.db.list_stories_by_category("medicine", limit=100)
+            + self.db.list_stories_by_category("ai", limit=100)
+            + self.db.list_stories_by_category("ai_engineering", limit=100)
+            + self.db.list_stories_by_category("ai_hardware", limit=100)
             + self.db.list_stories(limit=80, query="market stock_index sector oil fx")
             + self.db.list_stories(limit=300, query="mainstream world europe china us japan korea globaltimes cctv cgtn xinhua bbc npr nhk yonhap")
             + self.db.list_stories(limit=80, query="china cctv cgtn xinhua globaltimes youtube video official xinwen_lianbo")
@@ -318,6 +338,12 @@ class NewsAgentApp:
             story_briefing_counts=story_counts,
             max_briefing_repeats=max_repeats,
             repeat_backfill_limit=int(briefing_settings.get("repeat_backfill_limit", 5)),
+            world_region_limit=int(
+                briefing_settings.get("world_region_limit", DEFAULT_WORLD_REGION_LIMIT)
+            ),
+            world_region_minimum=int(
+                briefing_settings.get("world_region_minimum", DEFAULT_WORLD_REGION_MINIMUM)
+            ),
         )
 
     def send_email(
@@ -431,10 +457,12 @@ class NewsAgentApp:
 
 def select_briefing_stories(
     candidates: list[dict[str, Any]],
-    max_stories: int = 75,
+    max_stories: int = 90,
     story_briefing_counts: dict[int, int] | None = None,
     max_briefing_repeats: int = 2,
     repeat_backfill_limit: int = 5,
+    world_region_limit: int = DEFAULT_WORLD_REGION_LIMIT,
+    world_region_minimum: int = DEFAULT_WORLD_REGION_MINIMUM,
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     seen: set[int] = set()
@@ -460,35 +488,109 @@ def select_briefing_stories(
         and story_counts.get(int(story["id"]), 0) >= max_briefing_repeats
     ]
 
-    market_quota = min(45, max(12, max_stories // 2))
+    available_world_regions = [
+        region
+        for region in WORLD_REGIONS
+        if any(
+            story.get("category") == "world_news"
+            and story.get("region") == region
+            and not is_stale_world_story(story)
+            for story in candidates
+        )
+    ]
+    required_world_capacity = min(
+        max_stories,
+        len(available_world_regions) * max(0, world_region_minimum),
+    )
+    base_market_quota = min(45, max(12, max_stories // 2))
     specialty_quota = min(10, max(0, max_stories // 7))
     medicine_quota = specialty_quota
     ai_quota = specialty_quota
-    world_quota = max(0, max_stories - market_quota - medicine_quota - ai_quota)
+    world_quota = max(
+        required_world_capacity,
+        max(0, max_stories - base_market_quota - medicine_quota - ai_quota),
+    )
+    world_quota = min(max_stories, world_quota)
+    market_quota = min(
+        base_market_quota,
+        max(0, max_stories - world_quota - medicine_quota - ai_quota),
+    )
 
     market = prioritize_market_stories([s for s in fresh_candidates if s.get("category") == "market"])
     for story in market[:market_quota]:
         add(story)
 
     world_added = 0
+    world_added_by_region = {region: 0 for region in WORLD_REGIONS}
+    regional_repeat_added = 0
     world_news = sort_by_freshness_and_score(
         [s for s in fresh_candidates if s.get("category") == "world_news"]
     )
+    repeated_world_news = sort_by_freshness_and_score(
+        [s for s in repeat_candidates if s.get("category") == "world_news"]
+    )
+
+    # First reserve the configured minimum for every available region. A
+    # recent repeated story is allowed only when a region has no eligible new
+    # story, so a region never disappears entirely from the daily brief.
     for region in WORLD_REGIONS:
         if world_added >= world_quota:
             break
-        region_candidates = [
+        fresh_region_candidates = [
             s
             for s in world_news
             if s.get("region") == region and not is_stale_world_story(s)
         ]
-        for story in diversify_by_source(region_candidates, limit=5):
+        minimum_candidates = diversify_by_source(
+            fresh_region_candidates,
+            limit=min(world_region_minimum, world_region_limit),
+        )
+        if not minimum_candidates and world_region_minimum > 0:
+            repeated_region_candidates = [
+                s
+                for s in repeated_world_news
+                if s.get("region") == region and not is_stale_world_story(s)
+            ]
+            minimum_candidates = [
+                {**story, "regional_repeat_fallback": True}
+                for story in diversify_by_source(
+                    repeated_region_candidates,
+                    limit=min(world_region_minimum, world_region_limit),
+                )
+            ]
+        for story in minimum_candidates:
             if world_added >= world_quota:
                 break
             before = len(selected)
             add(story)
             if len(selected) > before:
                 world_added += 1
+                world_added_by_region[region] += 1
+                if story.get("regional_repeat_fallback"):
+                    regional_repeat_added += 1
+
+    # Fill each regional section up to its normal limit with fresh stories.
+    for region in WORLD_REGIONS:
+        if world_added >= world_quota:
+            break
+        remaining_region_slots = max(
+            0,
+            world_region_limit - world_added_by_region[region],
+        )
+        region_candidates = [
+            s
+            for s in world_news
+            if s.get("region") == region and not is_stale_world_story(s)
+        ]
+        for story in diversify_by_source(region_candidates, limit=world_region_limit):
+            if remaining_region_slots <= 0 or world_added >= world_quota:
+                break
+            before = len(selected)
+            add(story)
+            if len(selected) > before:
+                world_added += 1
+                world_added_by_region[region] += 1
+                remaining_region_slots -= 1
 
     medicine = [s for s in fresh_candidates if s.get("category") == "medicine"]
     policy_medical = [
@@ -511,11 +613,35 @@ def select_briefing_stories(
     for story in diversify_by_source(ai_tech, limit=ai_quota):
         add(story)
 
+    def selected_count(*categories: str) -> int:
+        allowed = set(categories)
+        return sum(1 for item in selected if item.get("category") in allowed)
+
     for story in sort_by_freshness_and_score(fresh_candidates):
+        category = story.get("category")
+        if category == "market" and selected_count("market") >= market_quota:
+            continue
+        if category == "world_news":
+            region = story.get("region")
+            if sum(
+                1
+                for item in selected
+                if item.get("category") == "world_news"
+                and item.get("region") == region
+                and not item.get("briefing_repeat_backfill")
+            ) >= world_region_limit:
+                continue
+        if category == "medicine" and selected_count("medicine") >= medicine_quota:
+            continue
+        if (
+            category in {"ai", "ai_engineering", "ai_hardware"}
+            and selected_count("ai", "ai_engineering", "ai_hardware") >= ai_quota
+        ):
+            continue
         add(story)
         if len(selected) >= max_stories:
             break
-    repeat_added = 0
+    repeat_added = regional_repeat_added
     for story in sort_by_freshness_and_score(repeat_candidates):
         if repeat_added >= repeat_backfill_limit or len(selected) >= max_stories:
             break

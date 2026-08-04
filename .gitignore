@@ -4,6 +4,12 @@
 !.env.example
 config/settings.json
 config/settings.local.json
+config/settings.q3.local.json
+
+# Local model weights and quantization artifacts
+models/*.gguf
+models/*.part
+models/*.tmp
 
 # Runtime data and generated briefings
 data/
@@ -52,4 +58,3 @@ docs/archive/
 .DS_Store
 Thumbs.db
 desktop.ini
-

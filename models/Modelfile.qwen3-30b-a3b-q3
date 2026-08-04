@@ -1,0 +1,4 @@
+FROM C:/Users/Zhang Jue/Documents/NewsAgent/models/Qwen3-30B-A3B-Q3_K_M.gguf
+
+PARAMETER temperature 0.2
+PARAMETER num_ctx 8192

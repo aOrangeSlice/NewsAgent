@@ -10,15 +10,20 @@ from newsagent.llm import (
     Summarizer,
     answer_cites_known_sources,
     answer_matches_language,
+    append_unknown_url_warning,
     build_answer_prompt,
     build_answer_regeneration_prompt,
     build_answer_rewrite_prompt,
+    build_briefing_prompt,
     enforce_deterministic_market_section,
+    enforce_deterministic_regional_news_section,
     fallback_answer,
     fallback_briefing,
     group_market_stories,
     is_valid_generated_briefing,
+    normalize_generated_briefing,
     normalize_output_language,
+    unknown_cited_urls,
     protect_translation_tokens,
     restore_translation_tokens,
     split_markdown_for_translation,
@@ -41,6 +46,35 @@ class OutputLanguageTests(unittest.TestCase):
         self.assertEqual(normalize_output_language("source"), "original")
         with self.assertRaises(ValueError):
             normalize_output_language("fr")
+
+    def test_llm_output_gets_deterministic_coverage_for_every_selected_region(self):
+        regions = [
+            ("europe", "Europe"),
+            ("china", "China"),
+            ("us", "United States"),
+            ("japan", "Japan"),
+            ("korea", "South Korea"),
+        ]
+        stories = [
+            {
+                "id": 3000 + index,
+                "title": f"{label} headline",
+                "summary": f"Latest news from {label}.",
+                "category": "world_news",
+                "region": region,
+                "source_urls": [f"https://example.com/{region}"],
+            }
+            for index, (region, label) in enumerate(regions)
+        ]
+
+        result = enforce_deterministic_regional_news_section(
+            "# Daily Brief\n\n## Takeaways and implications\n\n- Existing analysis.",
+            stories,
+        )
+
+        for region, label in regions:
+            self.assertIn(f"### {label}", result)
+            self.assertIn(f"https://example.com/{region}", result)
 
     @patch("newsagent.llm.OllamaClient.available", return_value=False)
     def test_translation_falls_back_to_original_content(self, _available):
@@ -67,8 +101,12 @@ class OutputLanguageTests(unittest.TestCase):
         generate,
     ):
         generate.side_effect = [
-            "# Daily Brief\n\n- [12] LLM summary https://example.com/a",
-            "# 每日情报简报\n\n- __NEWSAGENT_PROTECTED_0001__ LLM 摘要 __NEWSAGENT_PROTECTED_0002__",
+            "# Daily Brief\n\n- [12] LLM summary https://example.com/a\n\n"
+            "## Takeaways and implications\n"
+            "- Signal: LLM summary; implication: monitor it; suggested watch: compare follow-up data.",
+            "# 每日情报简报\n\n- __NEWSAGENT_PROTECTED_0001__ LLM 摘要 __NEWSAGENT_PROTECTED_0002__\n\n"
+            "## Takeaways and implications\n"
+            "- 信号：LLM 摘要；影响：需要持续观察；建议：比较后续数据。",
             "# 每日情报简报\n\n- __NEWSAGENT_PROTECTED_0001__ 规则摘要 __NEWSAGENT_PROTECTED_0002__",
         ]
         summarizer = Summarizer(self.settings)
@@ -335,10 +373,10 @@ class OutputLanguageTests(unittest.TestCase):
         self.assertTrue(answer_cites_known_sources("根拠：https://example.com/source", stories))
         self.assertFalse(answer_cites_known_sources("根拠：https://example.com/other", stories))
 
-    def test_generated_briefing_validation_rejects_chatty_non_brief_output(self):
+    def test_generated_briefing_validation_accepts_nonempty_output(self):
         stories = [{"source_urls": ["https://example.com/source"]}]
 
-        self.assertFalse(
+        self.assertTrue(
             is_valid_generated_briefing(
                 "It looks like you've provided market data.\n\nWould you like a chart?",
                 stories,
@@ -350,6 +388,81 @@ class OutputLanguageTests(unittest.TestCase):
                 stories,
             )
         )
+        self.assertFalse(is_valid_generated_briefing("", stories))
+
+    def test_generated_briefing_accepts_safe_title_and_markdown_wrappers(self):
+        stories = [{"source_urls": ["https://example.com/source"]}]
+        generated = (
+            "\ufeffHere is the report.\n\n```markdown\n"
+            "## Daily Briefing: 2026-07-13\n\n"
+            "- [1] Item https://example.com/source\n```"
+        )
+
+        self.assertEqual(
+            normalize_generated_briefing(generated),
+            "# Daily Brief\n\n- [1] Item https://example.com/source",
+        )
+        self.assertTrue(is_valid_generated_briefing(generated, stories))
+
+    def test_briefing_prompt_makes_canonical_title_explicit(self):
+        prompt = build_briefing_prompt([], "original")
+
+        self.assertIn("Prefer starting with `# Daily Brief`", prompt)
+        self.assertIn("outer code fence", prompt)
+
+    def test_generated_briefing_keeps_unknown_urls_after_relaxation(self):
+        stories = [{"source_urls": ["https://example.com/source"]}]
+
+        self.assertTrue(
+            is_valid_generated_briefing(
+                "Daily Brief\n\n- [1] Item https://example.com/unknown",
+                stories,
+            )
+        )
+        self.assertTrue(
+            is_valid_generated_briefing(
+                "### Daily Brief\n\n- [1] Item https://example.com/source).",
+                stories,
+            )
+        )
+        self.assertTrue(
+            is_valid_generated_briefing(
+                "Daily Brief\n\n- [1] [Item](https://example.com/source)",
+                stories,
+            )
+        )
+
+    def test_unknown_briefing_url_is_marked_without_rejecting_generation(self):
+        stories = [{"source_urls": ["https://example.com/source"]}]
+        body = "# Daily Brief\n\n- [1] Item https://example.com/unknown"
+
+        self.assertTrue(is_valid_generated_briefing(body, stories))
+        self.assertEqual(unknown_cited_urls(body, stories), ["https://example.com/unknown"])
+        warned = append_unknown_url_warning(body, unknown_cited_urls(body, stories))
+        self.assertIn("were not present in the collected evidence", warned)
+        self.assertIn("> - https://example.com/unknown", warned)
+
+    @patch("newsagent.llm.OllamaClient.generate")
+    @patch("newsagent.llm.OllamaClient.available", return_value=True)
+    def test_llm_briefing_keeps_generated_output_without_url_warning(self, _available, generate):
+        generate.return_value = (
+            "# Daily Brief\n\n- [1] Item https://example.com/unknown\n\n"
+            "## Takeaways and implications\n"
+            "- Signal: Item; implication: context is limited; suggested watch: monitor updates. "
+            "https://example.com/unknown"
+        )
+        stories = [{"id": 1, "title": "Item", "source_urls": ["https://example.com/source"]}]
+
+        output = Summarizer(self.settings).create_briefing(
+            stories,
+            output_language="original",
+            use_llm=True,
+        )
+
+        self.assertEqual(output.generation_status, "generated")
+        self.assertEqual(output.generation_model, "test-model")
+        self.assertIn("https://example.com/unknown", output.body)
+        self.assertNotIn("not present in the collected evidence", output.body)
 
     def test_answer_rewrite_prompt_requests_target_language_only(self):
         prompt = build_answer_rewrite_prompt("这是中文回答。", "ja")

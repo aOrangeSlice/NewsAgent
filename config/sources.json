@@ -252,7 +252,7 @@
     "subcategory": "digital_medicine_journal",
     "region": "global",
     "url": "https://www.nature.com/npjdigitalmed.rss",
-    "enabled": false,
+    "enabled": true,
     "tier": 1,
     "priority": "P0",
     "tags": ["medicine", "health", "journal", "clinical", "digital_medicine", "digital_health", "nature"]

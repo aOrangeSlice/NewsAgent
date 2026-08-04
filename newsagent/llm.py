@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 import html
 import json
 import re
+import time
+import unicodedata
 
 from .medical import is_medical_story, medical_signal_score
 
@@ -94,6 +96,7 @@ class OllamaClient:
         self.model = model
         self.temperature = temperature
         self.num_ctx = num_ctx
+        self.metrics_history: list[dict[str, Any]] = []
 
     def available(self) -> bool:
         try:
@@ -119,12 +122,35 @@ class OllamaClient:
             data=data,
             headers={"Content-Type": "application/json"},
         )
+        started = time.perf_counter()
         try:
             with request.urlopen(req, timeout=180) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
+                self.metrics_history.append(self._extract_metrics(body, time.perf_counter() - started))
                 return body.get("response", "").strip()
         except error.HTTPError as exc:
             raise RuntimeError(exc.read().decode("utf-8", errors="replace")) from exc
+
+    def drain_metrics(self) -> list[dict[str, Any]]:
+        metrics = list(self.metrics_history)
+        self.metrics_history.clear()
+        return metrics
+
+    def _extract_metrics(self, body: dict[str, Any], elapsed_seconds: float) -> dict[str, Any]:
+        metrics = {
+            "total_duration_ns": body.get("total_duration"),
+            "load_duration_ns": body.get("load_duration"),
+            "prompt_eval_count": body.get("prompt_eval_count"),
+            "prompt_eval_duration_ns": body.get("prompt_eval_duration"),
+            "eval_count": body.get("eval_count"),
+            "eval_duration_ns": body.get("eval_duration"),
+            "elapsed_seconds": round(elapsed_seconds, 3),
+        }
+        eval_count = metrics["eval_count"]
+        eval_duration_ns = metrics["eval_duration_ns"]
+        if isinstance(eval_count, (int, float)) and isinstance(eval_duration_ns, (int, float)) and eval_duration_ns:
+            metrics["eval_tokens_per_second"] = round(eval_count / (eval_duration_ns / 1_000_000_000), 2)
+        return metrics
 
 
 class Summarizer:
@@ -132,7 +158,7 @@ class Summarizer:
         self.settings = settings
         llm_settings = settings.get("llm", {})
         self.provider = llm_settings.get("provider", "ollama")
-        self.model = llm_settings.get("model", "qwen3:8b")
+        self.model = llm_settings.get("model", "qwen3:30bq3")
         self.db = db
         self.ollama = OllamaClient(
             base_url=llm_settings.get("base_url", "http://localhost:11434"),
@@ -166,7 +192,11 @@ class Summarizer:
             output_language=output_language,
             generation_mode="llm" if should_use_llm else "rules",
             generation_status=generation_status,
-            generation_model=self.model if generation_status == "generated" else "",
+            generation_model=(
+                self.model
+                if generation_status in {"generated", "generated_with_warnings"}
+                else ""
+            ),
             translation_status=translation_status,
             translation_model=self.model if translation_status == "translated" else "",
         )
@@ -195,8 +225,16 @@ class Summarizer:
                     clean_model_output(result),
                     stories,
                 )
-                if not is_valid_generated_briefing(cleaned, stories):
-                    raise ValueError("generated briefing failed structure or citation validation")
+                cleaned = enforce_deterministic_regional_news_section(
+                    cleaned,
+                    stories,
+                )
+                validation_reasons = briefing_validation_reasons(cleaned, stories)
+                if validation_reasons:
+                    raise ValueError(
+                        "generated briefing validation failed: "
+                        + ",".join(validation_reasons)
+                    )
                 if self.db:
                     self.db.log_llm_run(self.provider, self.model, True)
                 return cleaned, "generated"
@@ -353,19 +391,41 @@ def build_briefing_prompt(stories: list[dict[str, Any]], language: str) -> str:
 /no_think
 You are NewsAgent, a local-first intelligence briefing assistant.
 {language_instruction}
-Use only the evidence JSON. Every factual bullet must cite a source URL.
-Group market data into global indices, US sectors, international sectors by region, and commodities/FX.
-For global indices, include all available items from the configured major index universe, up to 10.
-Do not place equity sector ETFs or sector indices in commodities/FX.
-Group mainstream media by region and list up to 5 important stories per region.
-Stories with `briefing_repeat_backfill: true` are previously covered items. Never
-place them in the regional Top 5, medical, or AI/technology core sections. List
-them only after the core sections under `## Earlier coverage / repeat backfill`.
-Always include a medical/health section with up to 10 high-signal items when available; if evidence is sparse, write watch items instead of saying there is no evidence.
-For AI/technology, list up to 10 items and rotate across source domains whenever
-multiple sources are available.
-Use the section headings `## Medical and health — Top 10` and
-`## AI and technology — Top 10`.
+Use the evidence JSON as the main context and focus on useful analysis rather than
+strict formatting. Make reasonable connections between related signals and form
+clear, practical insights. Do not force exact item counts, citation formats, or
+standard wording.
+Return a Markdown briefing. Prefer starting with `# Daily Brief`, but do not add a
+long preamble, explanation, or outer code fence.
+
+Write the briefing around these sections:
+
+## Financial market signals and insights
+Review the available financial indices, sector data, commodities, and FX. Highlight
+the most meaningful movements and useful comparisons. For each insight, explain the
+observed signal, why it may matter based on the evidence, and what to monitor next.
+Do not force every instrument into the section.
+
+## Important mainstream news by region — Top 5
+Include every region present in the evidence: Europe, China, United States, Japan,
+and South Korea. Give each available region its own heading and cite at least one
+story with its story ID and source URL. This section is mandatory and must not be
+collapsed into the final synthesis.
+
+## AI and technology
+Select the most relevant AI and technology developments. For each item, give a concise
+insight about its significance and provide specific further-reading topics or follow-up
+search questions.
+
+## Medical and health
+Select the most relevant medical and health developments. For each item, give an
+evidence-based insight, explain why it may matter, and provide specific further-reading
+topics or follow-up search questions. If evidence is sparse, say so and suggest
+questions for further investigation.
+
+## Takeaways and implications
+End with a concise synthesis of the strongest cross-section signals and the next checks
+that would help explore them.
 
 Evidence JSON:
 {evidence}
@@ -500,35 +560,94 @@ def validate_translation(source: str, translated: str) -> bool:
 
 
 def answer_cites_known_sources(text: str, stories: list[dict[str, Any]]) -> bool:
-    known_urls = {
+    known_urls = known_source_urls(stories)
+    if not known_urls:
+        return True
+    cited_urls = set(extract_cited_urls(text))
+    return bool(cited_urls) and not unknown_cited_urls(text, stories)
+
+
+def briefing_validation_reasons(text: str, stories: list[dict[str, Any]]) -> list[str]:
+    normalized = normalize_generated_briefing(text)
+    return ["empty"] if not normalized else []
+
+
+def is_valid_generated_briefing(text: str, stories: list[dict[str, Any]]) -> bool:
+    return not briefing_validation_reasons(text, stories)
+
+
+def normalize_generated_briefing(text: str) -> str:
+    """Normalize harmless model wrappers without changing evidence or citations."""
+    normalized = unicodedata.normalize("NFC", text or "").replace("\r\n", "\n")
+    normalized = normalized.lstrip("\ufeff").strip()
+    lines = normalized.splitlines()
+
+    if lines and re.fullmatch(r"```(?:markdown|md)?\s*", lines[0].strip(), re.IGNORECASE):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+
+    title_index = next(
+        (
+            index
+            for index, line in enumerate(lines[:4])
+            if re.fullmatch(
+                r"\s*(?:#{1,6}\s*)?Daily\s+Brief(?:ing)?(?:\s*[:：\-–—].*)?\s*",
+                line,
+                re.IGNORECASE,
+            )
+        ),
+        None,
+    )
+    if title_index is not None:
+        lines = ["# Daily Brief", *lines[title_index + 1 :]]
+    return "\n".join(lines).strip()
+
+
+def has_acceptable_briefing_title(text: str) -> bool:
+    lines = (text or "").splitlines()
+    return bool(lines and lines[0].strip() == "# Daily Brief")
+
+
+def extract_cited_urls(text: str) -> list[str]:
+    # Stop at Markdown link delimiters so [label](known-url) yields the two
+    # actual URL tokens instead of one malformed token spanning the link.
+    return [
+        normalize_cited_url(url)
+        for url in re.findall(r"https?://[^\s<>\[\]\(\)\"']+", text or "")
+    ]
+
+
+def known_source_urls(stories: list[dict[str, Any]]) -> set[str]:
+    return {
         normalize_cited_url(url)
         for story in stories
         for url in story.get("source_urls", [])
         if url
     }
+
+
+def unknown_cited_urls(text: str, stories: list[dict[str, Any]]) -> list[str]:
+    known_urls = known_source_urls(stories)
     if not known_urls:
-        return True
-    cited_urls = {normalize_cited_url(url) for url in re.findall(r"https?://[^\s)>]+", text or "")}
-    return bool(cited_urls) and cited_urls.issubset(known_urls)
+        return []
+    return sorted(set(extract_cited_urls(text)) - known_urls)
 
 
-def is_valid_generated_briefing(text: str, stories: list[dict[str, Any]]) -> bool:
-    if not (text or "").lstrip().startswith("# Daily Brief"):
-        return False
-    lower = text.lower()
-    banned_phrases = [
-        "you've provided",
-        "would you like",
-        "let me know",
-        "next steps",
+def append_unknown_url_warning(markdown: str, urls: list[str]) -> str:
+    if not urls:
+        return markdown
+    lines = [
+        "",
+        "> Warning: the following cited URL(s) were not present in the collected evidence and were not independently verified:",
+        *(f"> - {url}" for url in urls),
     ]
-    if any(phrase in lower for phrase in banned_phrases):
-        return False
-    return answer_cites_known_sources(text, stories)
+    return "\n".join([markdown.rstrip(), *lines]).strip()
 
 
 def normalize_cited_url(url: str) -> str:
-    return (url or "").rstrip(".,;:!?)）】」'")
+    cleaned = html.unescape((url or "").strip().strip("<>"))
+    return cleaned.rstrip(".,;:!?)]}）】」』》'\"")
 
 
 def answer_matches_language(text: str, language: str) -> bool:
@@ -914,7 +1033,6 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
     market_groups = group_market_stories(market)
     repeat_backfill = [story for story in stories if story.get("briefing_repeat_backfill")]
     core_stories = [story for story in stories if not story.get("briefing_repeat_backfill")]
-    world_news = [s for s in core_stories if s["category"] == "world_news" and not is_obviously_stale(s)]
     medical = select_medical_stories(core_stories)
     ai_tech = select_ai_technology_stories(core_stories)
 
@@ -927,17 +1045,7 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
     render_market_region_groups(lines, market_groups["international_sectors"], original)
     render_market_group(lines, "Commodities and FX" if original else "商品与外汇", market_groups["commodities_fx"], original)
 
-    lines.extend(["", "## Important mainstream news by region — Top 5" if original else "## 各地区主流媒体重要新闻 Top 5"])
-    for region in WORLD_REGION_ORDER:
-        bucket = [story for story in world_news if story.get("region") == region][:5]
-        if not bucket:
-            continue
-        region_label = WORLD_REGION_LABELS_EN[region] if original else WORLD_REGION_LABELS[region]
-        lines.extend(["", f"### {region_label}"])
-        for story in bucket:
-            summary = clean_summary(story.get("summary") or ("High-ranking item from a mainstream RSS feed." if original else "来自主流媒体 RSS 的高排序新闻。"))
-            source_label = "Source:" if original else "来源："
-            lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
+    lines.extend(["", render_regional_news_section(stories, original=original)])
 
     lines.extend(["", "## Medical and health — Top 10" if original else "## 医疗与健康资讯 Top 10"])
     if medical:
@@ -1069,6 +1177,94 @@ def enforce_deterministic_market_section(markdown: str, stories: list[dict[str, 
     if lines and lines[0].startswith("# "):
         return "\n".join([lines[0], "", section, "", *lines[1:]]).strip()
     return f"{section}\n\n{markdown.strip()}".strip()
+
+
+def enforce_deterministic_regional_news_section(
+    markdown: str,
+    stories: list[dict[str, Any]],
+) -> str:
+    regional_stories = [
+        story
+        for story in stories
+        if story.get("category") == "world_news"
+        and not story.get("briefing_repeat_backfill")
+        and not is_obviously_stale(story)
+    ]
+    if not regional_stories:
+        return markdown
+
+    section = render_regional_news_section(stories, original=True)
+    regional_pattern = re.compile(
+        r"^## (?:Important mainstream news by region[^\n]*|Regional news[^\n]*)\s*.*?(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    if regional_pattern.search(markdown):
+        return regional_pattern.sub(f"{section}\n\n", markdown, count=1).strip()
+
+    market_pattern = re.compile(
+        r"^## Market overview: global indices and sectors\s*.*?(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    market_match = market_pattern.search(markdown)
+    if market_match:
+        insert_at = market_match.end()
+        return (
+            markdown[:insert_at].rstrip()
+            + "\n\n"
+            + section
+            + "\n\n"
+            + markdown[insert_at:].lstrip()
+        ).strip()
+
+    lines = markdown.strip().splitlines()
+    if lines and lines[0].startswith("# "):
+        return "\n".join([lines[0], "", section, "", *lines[1:]]).strip()
+    return f"{section}\n\n{markdown.strip()}".strip()
+
+
+def render_regional_news_section(
+    stories: list[dict[str, Any]],
+    original: bool = True,
+) -> str:
+    world_news = [
+        story
+        for story in stories
+        if story.get("category") == "world_news"
+        and not story.get("briefing_repeat_backfill")
+        and not is_obviously_stale(story)
+    ]
+    lines = [
+        "## Important mainstream news by region — Top 5"
+        if original
+        else "## 各地区主流媒体重要新闻 Top 5"
+    ]
+    for region in WORLD_REGION_ORDER:
+        bucket = [story for story in world_news if story.get("region") == region][:5]
+        if not bucket:
+            continue
+        region_label = WORLD_REGION_LABELS_EN[region] if original else WORLD_REGION_LABELS[region]
+        lines.extend(["", f"### {region_label}"])
+        for story in bucket:
+            summary = clean_summary(
+                story.get("summary")
+                or (
+                    "High-ranking item from a mainstream RSS feed."
+                    if original
+                    else "来自主流媒体 RSS 的高排序新闻。"
+                )
+            )
+            if story.get("regional_repeat_fallback"):
+                summary += (
+                    " Recently covered; retained to keep this region represented."
+                    if original
+                    else "该条近期已出现，本轮为保持地区覆盖而保留。"
+                )
+            source_label = "Source:" if original else "来源："
+            lines.append(
+                f"- [{story['id']}] {story['title']} — {summary} "
+                f"{source_label} {first_source(story)}"
+            )
+    return "\n".join(lines).strip()
 
 
 def render_market_overview_section(stories: list[dict[str, Any]]) -> str:
@@ -1256,7 +1452,7 @@ def is_obviously_stale(story: dict[str, Any]) -> bool:
 
 
 def clean_model_output(text: str) -> str:
-    text = text.strip()
+    text = unicodedata.normalize("NFC", text or "").strip()
     if "</think>" in text:
         text = text.split("</think>", 1)[1].strip()
     if text.lower().startswith("thinking..."):
@@ -1265,7 +1461,7 @@ def clean_model_output(text: str) -> str:
         idx = lower.find(marker)
         if idx >= 0:
             text = text[idx + len(marker):].strip()
-    return remove_empty_evidence_sections(text)
+    return remove_empty_evidence_sections(normalize_generated_briefing(text))
 
 
 def remove_empty_evidence_sections(text: str) -> str:

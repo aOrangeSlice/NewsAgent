@@ -50,11 +50,12 @@ python -m newsagent daily --output-language original --email
 
 ### 4. 候选召回
 
-简报不会直接从全库选择，而是先召回几组候选：市场、主流国际新闻、中国/官方视频、医学健康、通用高分项。非市场新闻默认只保留 48 小时内内容；市场数据不受该限制。
+简报不会直接从全库选择，而是先召回几组候选：五个地区各自的最新主流新闻、市场、中国/官方视频、医学健康和通用高分项。Europe、China、United States、Japan、South Korea 会分别按 `updated_at` 召回最多 100 条候选，再统一执行 48 小时时间过滤，避免某个地区的历史高分内容在全局 `LIMIT` 前挤掉其他地区的新内容。市场数据不受 48 小时限制。
 
 | 逻辑 | 生成结果 | 对应 DB 表和字段 |
 |---|---|---|
-| 按类别召回市场 | 最新市场 clusters | `story_clusters.category = market` |
+| 按类别召回市场/医疗/AI | 各类别 freshness-first 的最新 clusters | `story_clusters.category`、`updated_at` |
+| 按地区召回主流新闻 | 五个地区分别建立新鲜候选池，默认每区最多 100 条 | `story_clusters.category = world_news`、`region`、`updated_at` |
 | 按关键词召回新闻 | 主流新闻、中国来源、医学健康等候选 | `story_clusters.title`、`summary`、`tags_json`、`source_urls_json` |
 | 附加最新时间和 metrics | published_at、retrieved_at、metrics | `raw_items` 通过 `story_clusters.item_ids_json` 关联 |
 | 用户反馈加权 | rank_score、feedback_boost 等内存字段 | `feedback` 参与查询时排序，不回写 `story_clusters.score` |
@@ -76,16 +77,16 @@ python -m newsagent daily --output-language original --email
 | 类别反馈扩散 | 同类别：important +3，track_more +5，show_less -4，irrelevant -6 | `feedback` + `story_clusters.category` |
 | 标签反馈扩散 | tag 重叠最多算 4 个；每个 tag：important +1.5，track_more +2.5，show_less -1.5，irrelevant -2.5 | `feedback` + `story_clusters.tags_json` |
 
-候选召回阶段通常先按 `score DESC, updated_at DESC` 取出，再应用反馈形成临时 `rank_score`。`rank_score` 只在内存中使用，不会写回数据库。
+通用关键词候选仍按 `score DESC, updated_at DESC` 取出，再应用反馈形成临时 `rank_score`。地区新闻使用独立的 freshness-first 候选池，不会先参加全局分数截断。`rank_score` 只在内存中使用，不会写回数据库。
 
 ### 6. 最终筛选
 
-默认最多 75 条。当前配额大致是：市场约 32 条，主流国际新闻约 23 条，医学健康最多 10 条，AI/科技最多 10 条。
+默认最多 90 条。当前配额是：市场最多约 45 条、主流国际新闻最多约 25 条（五区各最多 5 条）、医学健康最多 10 条、AI/科技最多 10 条。某类候选不足时，剩余容量可由其他新鲜候选补充。
 
 | 逻辑 | 生成结果 | 对应 DB 表 |
 |---|---|---|
 | 市场优先筛选 | 全球指数、商品外汇、美股行业、国际板块等 | 读取 `story_clusters` 和 `raw_items.metrics_json` |
-| 主流新闻分地区筛选 | Europe、China、United States、Japan、South Korea 各最多 5 条；只展示新内容 | 读取 `story_clusters.region` |
+| 主流新闻分地区筛选 | Europe、China、United States、Japan、South Korea 各最多 5 条，且有近期候选时每区至少 1 条 | 读取 `story_clusters.region` |
 | 医学健康筛选 | 最多 10 条医学/健康内容 | 读取 `story_clusters.category`、`tags_json` |
 | AI/科技筛选 | 最多 10 条 AI/技术内容，多个来源可用时按来源域名轮换 | 读取 `story_clusters.category`、`tags_json` |
 | 最终入选 story id | 本次简报使用的 story id 列表 | 保存到 `briefings.story_ids_json` |
@@ -93,23 +94,23 @@ python -m newsagent daily --output-language original --email
 详细筛选标准：
 
 1. 先把候选按 story id 去重，避免同一 cluster 重复进入。
-2. market 内容先进入，但受市场配额限制，默认约 32 条。
+2. market 内容先进入，但受市场配额限制，90 条配置下最多约 45 条；系统会先为可用地区预留最低容量。
 3. market 内部先按品类排序：全球指数、商品/外汇、美股行业、国际板块、其他。
 4. world_news 先按 `published_at` 或 `retrieved_at` 新鲜度排序，再看 `score`。
-5. world_news 按地区分桶，Europe、China、United States、Japan、South Korea 每区最多 5 条。历史重复内容不进入各地区 Top 5；仅在简报最后的“历史跟进与重复内容补位”区域展示。
+5. world_news 按地区分桶，Europe、China、United States、Japan、South Korea 每区最多 5 条。每个有近期候选的地区至少保留 1 条；优先使用未达到重复上限的新内容，若某地区没有新的合格条目，则使用 1 条近期重复内容作为地区保底，并明确标注。其他重复内容仍只进入“历史跟进与重复内容补位”。
 6. medicine 和 AI/科技分别保留最多 10 条，优先选择时间最新的候选；多个来源可用时按来源域名轮换，只有来源不足时才由同一来源补足。
-7. 如果还没达到 75 条，从剩余候选里按新鲜度和分数补齐。
+7. 如果还没达到 90 条，从剩余候选里按新鲜度和分数补齐。
 8. 明显过旧或历史页面会被剔除，例如特定旧 China Daily/People 页面。
 9. market 不走 48 小时过滤，因为休市时仍应展示最新常规交易收盘数据。
 
 ### 7. 简报输出
 
-每次 daily 会生成两版：`rules` 和 `llm`。`output-language original` 不翻译正文，但会加入数据新鲜度区块。若 LLM 输出格式不合格、出现聊天式话术或引用未知 URL，会自动回退到规则版。
+每次 daily 会生成两版：`rules` 和 `llm`。`output-language original` 不翻译正文，但会加入数据新鲜度区块。Rules 版直接按地区渲染；LLM 版生成后也会强制插入同一份确定性地区新闻段，确保模型不会省略任何已选地区。空的 LLM 结果会回退到规则版。
 
 | 逻辑 | 生成结果 | 对应 DB 表和文件 |
 |---|---|---|
 | rules 版简报 | 稳定规则版正文 | `briefings.generation_mode = rules` |
-| llm 版简报 | LLM 正文或 fallback_rules 正文 | `briefings.generation_mode = llm`、`generation_status` |
+| llm 版简报 | LLM 正文或空结果时的 fallback_rules 正文 | `briefings.generation_mode = llm`、`generation_status` |
 | 简报正文和证据 | body、canonical_body、story_ids_json | `briefings` |
 | LLM 运行状态 | ok/error、provider、model | `llm_runs` |
 | Markdown 输出 | latest.md、latest_rules.md、latest_llm.md、briefing 文件 | 文件系统 `data/outbox`，不是 DB 表 |
@@ -165,11 +166,12 @@ python -m newsagent daily --output-language original --email
 
 ### 4. 候補呼び出し
 
-ブリーフは全 DB から直接選ばず、市場、主流国際ニュース、中国/公式動画、医療健康、汎用高スコア項目を候補として呼び出します。市場以外は既定で 48 時間以内に絞ります。市場データは休場時も最新終値が必要なため対象外です。
+ブリーフは全 DB から直接選びません。Europe、China、United States、Japan、South Korea ごとに `updated_at` が新しい world_news を最大 100 件ずつ取得し、その後に 48 時間フィルタを適用します。これにより、単一地域の過去の高スコア記事がグローバル `LIMIT` を占有して他地域の新着を排除することを防ぎます。市場、中国/公式動画、医療健康、汎用高スコア候補も併せて取得します。市場データは 48 時間フィルタの対象外です。
 
 | ロジック | 生成結果 | 対応 DB テーブルとフィールド |
 |---|---|---|
-| 市場カテゴリ呼び出し | 最新市場 clusters | `story_clusters.category = market` |
+| 市場・医療・AI カテゴリ呼び出し | カテゴリ別の freshness-first 最新 clusters | `story_clusters.category`、`updated_at` |
+| 地域別 world_news 呼び出し | 5 地域ごとに freshness-first 候補を最大 100 件 | `story_clusters.category = world_news`、`region`、`updated_at` |
 | キーワード呼び出し | 主流ニュース、中国ソース、医療健康など | `story_clusters.title`、`summary`、`tags_json`、`source_urls_json` |
 | 最新時刻と metrics の付与 | published_at、retrieved_at、metrics | `raw_items`、`story_clusters.item_ids_json` |
 | フィードバック加重 | rank_score、feedback_boost などの一時値 | `feedback`、ただし `story_clusters.score` には書き戻さない |
@@ -191,16 +193,16 @@ python -m newsagent daily --output-language original --email
 | カテゴリへの波及 | 同カテゴリに important +3、track_more +5、show_less -4、irrelevant -6 | `feedback` + `story_clusters.category` |
 | タグへの波及 | 重複 tag は最大 4 個まで。1 tag あたり important +1.5、track_more +2.5、show_less -1.5、irrelevant -2.5 | `feedback` + `story_clusters.tags_json` |
 
-候補呼び出しでは、基本的に `score DESC, updated_at DESC` で取得し、その後フィードバックを反映した一時的な `rank_score` を使います。`rank_score` は DB に保存されません。
+汎用キーワード候補は `score DESC, updated_at DESC` で取得しますが、地域ニュースは独立した freshness-first 候補プールを使うため、グローバルスコアの上限で先に切られません。`rank_score` は DB に保存されません。
 
 ### 6. 最終選別
 
-既定では最大 75 件です。目安は、市場約 32 件、主流国際ニュース約 23 件、医療健康最大 10 件、AI/技術最大 10 件です。
+既定では最大 90 件です。目安は、市場最大約 45 件、主流国際ニュース最大約 25 件（5 地域 × 最大 5 件）、医療健康最大 10 件、AI/技術最大 10 件です。
 
 | ロジック | 生成結果 | 対応 DB テーブル |
 |---|---|---|
 | 市場優先選別 | グローバル指数、商品/為替、米国セクター、国際セクターなど | `story_clusters`、`raw_items.metrics_json` |
-| 地域別ニュース選別 | Europe、China、United States、Japan、South Korea 各最大 5 件。新規項目のみ表示 | `story_clusters.region` |
+| 地域別ニュース選別 | 5 地域各最大 5 件。最近の候補があれば各地域最低 1 件 | `story_clusters.region` |
 | 医療健康選別 | 最大 10 件 | `story_clusters.category`、`tags_json` |
 | AI/技術選別 | 最大 10 件。複数ソースがあればドメイン単位でローテーション | `story_clusters.category`、`tags_json` |
 | 採用 story id | 今回のブリーフで使う story id 一覧 | `briefings.story_ids_json` |
@@ -208,23 +210,23 @@ python -m newsagent daily --output-language original --email
 詳細な選別基準：
 
 1. story id で候補を重複排除する。
-2. market を先に入れるが、市場枠の上限を超えない。既定では約 32 件。
+2. market を先に入れるが、市場枠の上限を超えない。90 件設定では最大約 45 件で、利用可能な地域の最低枠を先に予約する。
 3. market の中では、グローバル指数、商品/為替、米国セクター、国際セクター、その他の順に並べる。
 4. world_news は `published_at` または `retrieved_at` の鮮度を優先し、次に `score` を見る。
-5. world_news は地域別に分け、Europe、China、United States、Japan、South Korea それぞれ最大 5 件。過去に繰り返し掲載された項目は地域別 Top 5 に入れず、ブリーフ末尾の履歴フォロー/補完枠にのみ表示する。
+5. world_news は 5 地域それぞれ最大 5 件。最近の候補がある地域は最低 1 件を保証する。新規候補を優先し、特定地域に新規候補がない場合だけ、最近掲載済みの 1 件を地域フォールバックとして明示して残す。それ以外の重複項目は履歴フォロー/補完枠にのみ表示する。
 6. medicine と AI/技術は、それぞれ最大 10 件で、鮮度の高い候補を優先する。複数ソースがあればドメイン単位でローテーションし、ソースが足りない場合のみ同一ソースで補完する。
-7. 75 件に満たない場合は、残り候補から鮮度とスコアで補完する。
+7. 90 件に満たない場合は、残り候補から鮮度とスコアで補完する。
 8. 明らかに古い履歴ページは除外する。例：一部の古い China Daily/People ページ。
 9. market は 48 時間フィルタの対象外。休場時も最新の通常取引終値を表示するため。
 
 ### 7. ブリーフ出力
 
-daily は毎回 `rules` と `llm` の 2 版を生成します。`output-language original` では本文を翻訳せず、データ鮮度セクションだけ追加します。LLM 出力が形式不正、チャット風、未知 URL 引用の場合は rules 版へフォールバックします。
+daily は毎回 `rules` と `llm` の 2 版を生成します。rules 版は地域別セクションを直接描画し、LLM 版にも生成後に同じ決定論的な地域別セクションを挿入します。そのため、モデルが選択済み地域を省略することはありません。LLM 結果が空の場合は rules 版へフォールバックします。
 
 | ロジック | 生成結果 | 対応 DB テーブルとファイル |
 |---|---|---|
 | rules 版 | ルールベースの安定した本文 | `briefings.generation_mode = rules` |
-| llm 版 | LLM 本文または fallback_rules 本文 | `briefings.generation_mode = llm`、`generation_status` |
+| llm 版 | LLM 本文または空結果時の fallback_rules 本文 | `briefings.generation_mode = llm`、`generation_status` |
 | ブリーフ本文と証拠 | body、canonical_body、story_ids_json | `briefings` |
 | LLM 実行状態 | ok/error、provider、model | `llm_runs` |
 | Markdown 出力 | latest.md、latest_rules.md、latest_llm.md、briefing files | ファイルシステム `data/outbox`、DB ではない |
@@ -280,11 +282,12 @@ After collection, new or refreshed `raw_items` are applied to `story_clusters`. 
 
 ### 4. Candidate Retrieval
 
-The brief is not selected directly from the whole database. It first retrieves candidate groups: market, mainstream international news, China/official video sources, medical and health, and general high-score items. Non-market items use a 48-hour lookback by default. Market items are exempt because closed markets still need the latest close.
+The brief is not selected directly from one global score-ranked pool. It first retrieves up to 100 freshness-first world-news candidates separately for Europe, China, the United States, Japan, and South Korea, then applies the 48-hour cutoff. This prevents one region's historical high-score items from consuming the global limit before other regions' fresh stories are considered. Market, China/official video, medical, and general high-score pools are also retrieved. Market data remains exempt from the 48-hour cutoff.
 
 | Logic | Generated Result | DB Table and Fields |
 |---|---|---|
-| Retrieve market category | Latest market clusters | `story_clusters.category = market` |
+| Retrieve market/medical/AI categories | Freshness-first latest clusters per category | `story_clusters.category`, `updated_at` |
+| Retrieve world news by region | Up to 100 freshness-first candidates for each of five regions | `story_clusters.category = world_news`, `region`, `updated_at` |
 | Retrieve by keyword | Mainstream, China, medical, and other candidates | `story_clusters.title`, `summary`, `tags_json`, `source_urls_json` |
 | Attach latest metadata | published_at, retrieved_at, metrics | `raw_items` via `story_clusters.item_ids_json` |
 | Apply feedback weighting | In-memory rank_score and feedback_boost | `feedback`; not written back to `story_clusters.score` |
@@ -306,16 +309,16 @@ Each raw item receives a base `score` after insertion. After clustering, this va
 | Category feedback spread | Same category: important +3, track_more +5, show_less -4, irrelevant -6 | `feedback` + `story_clusters.category` |
 | Tag feedback spread | Up to 4 overlapping tags; per tag: important +1.5, track_more +2.5, show_less -1.5, irrelevant -2.5 | `feedback` + `story_clusters.tags_json` |
 
-Candidate retrieval generally starts with `score DESC, updated_at DESC`, then applies feedback to create an in-memory `rank_score`. `rank_score` is not persisted to the database.
+General keyword retrieval still starts with `score DESC, updated_at DESC`, but regional news uses separate freshness-first pools and therefore cannot be removed by the global score cutoff. `rank_score` is not persisted to the database.
 
 ### 6. Final Selection
 
-The default maximum is 75 items. Approximate quotas are: market about 32, mainstream international news about 23, medical and health up to 10, AI/technology up to 10.
+The default maximum is 90 items. Approximate quotas are: market up to about 45, mainstream international news up to about 25 (five regions × five), medical and health up to 10, and AI/technology up to 10.
 
 | Logic | Generated Result | DB Table |
 |---|---|---|
 | Market-first selection | Global indices, commodities/FX, U.S. sectors, international sectors | `story_clusters`, `raw_items.metrics_json` |
-| Regional news selection | Up to 5 fresh items each for Europe, China, United States, Japan, South Korea | `story_clusters.region` |
+| Regional news selection | Up to 5 items per region, with at least 1 when a recent candidate exists | `story_clusters.region` |
 | Medical and health selection | Up to 10 items | `story_clusters.category`, `tags_json` |
 | AI/technology selection | Up to 10 items, rotating across source domains when multiple sources are available | `story_clusters.category`, `tags_json` |
 | Selected story ids | Story ids used by this briefing | `briefings.story_ids_json` |
@@ -326,24 +329,24 @@ Detailed selection criteria:
 
 1. Deduplicate candidates by story id.
 2. Before section selection, count previous appearances in `briefings.story_ids_json` by distinct `briefing_group`. Market stories are always treated as fresh daily snapshots. Non-market stories selected in 2 prior groups are excluded from normal section slots but remain available for limited final backfill. The `rules` and `llm` variants from the same run share one group and count once.
-3. Add market items first, up to the market quota, about 32 by default. Market is exempt from repeat limits so the Market overview remains present when market data is available.
+3. Add market items up to the market quota, about 45 with the 90-item configuration, while reserving the minimum capacity required by available regions. Market is exempt from repeat limits so the Market overview remains present when market data is available.
 4. Within market, use this category order: global indices, commodities/FX, U.S. sectors, international sectors, other.
 5. For world_news, sort first by `published_at` or `retrieved_at` freshness, then by `score`.
-6. Split world_news by region, with up to 5 fresh items each for Europe, China, United States, Japan, and South Korea. Repeated backfill items never appear in a regional Top 5; they are rendered only in the final Earlier coverage / repeat backfill section. Each regional Top 5 rotates across source domains where possible; if only one source is available, the section still fills from that source.
+6. Split world_news by region, with up to 5 items each for Europe, China, the United States, Japan, and South Korea. Every region with a recent candidate receives at least one item. Fresh items are preferred; only when a region has no eligible fresh item may one recently covered story be retained and labeled as a regional fallback. Other repeated items remain in the final Earlier coverage / repeat backfill section. Regional Top 5 lists rotate across source domains where possible.
 7. Add medicine and AI/technology items separately, each up to 10. These sections rotate across source domains where possible, while keeping the existing quality and freshness ordering; a single source fills remaining slots only when alternatives are unavailable.
-8. If fewer than 75 items have been selected, fill from fresh candidates by freshness and score.
+8. If fewer than 90 items have been selected, fill from fresh candidates by freshness and score.
 9. If the brief is still short, use repeated non-market stories as final backfill, capped at 5 by default, so volume is preserved without letting repeats dominate the main sections.
 10. Drop obviously stale historical pages, such as specific old China Daily/People pages.
 11. Exempt market from the 48-hour filter because closed markets still need the latest regular-session close.
 
 ### 7. Brief Output
 
-Each daily run creates both `rules` and `llm` editions. With `output-language original`, the body is not translated, but a data freshness section is added. If the LLM output is malformed, chat-like, or cites unknown URLs, it falls back to the rules edition.
+Each daily run creates both `rules` and `llm` editions. The rules edition renders the regional section directly. After LLM generation, the same deterministic regional section is inserted or replaced, so the model cannot omit a selected region. An empty LLM result falls back to the rules edition.
 
 | Logic | Generated Result | DB Table and Files |
 |---|---|---|
 | rules edition | Stable deterministic body | `briefings.generation_mode = rules` |
-| llm edition | LLM body or fallback_rules body | `briefings.generation_mode = llm`, `generation_status` |
+| llm edition | LLM body, or fallback_rules body when the result is empty | `briefings.generation_mode = llm`, `generation_status` |
 | Brief body and evidence | body, canonical_body, story_ids_json | `briefings` |
 | LLM run status | ok/error, provider, model | `llm_runs` |
 | Markdown output | latest.md, latest_rules.md, latest_llm.md, briefing files | File system `data/outbox`, not a DB table |

@@ -59,7 +59,7 @@ if (-not $env:NEWSAGENT_SMTP_PASSWORD) {
     throw "NEWSAGENT_SMTP_PASSWORD is not set. Use setx NEWSAGENT_SMTP_PASSWORD `"your-gmail-app-password`" for scheduled tasks."
 }
 
-python -m newsagent daily --language original --email *>&1 | ForEach-Object {
+python -m newsagent daily --email --output-language zh *>&1 | ForEach-Object {
     Write-Utf8LogLine ([string]$_)
 }
 

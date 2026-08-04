@@ -82,7 +82,94 @@ class RepeatedMarketDB:
         return {1: 99, 2: 99}
 
 
+class RegionalCandidateDB:
+    def __init__(self):
+        self.regional = {
+            region: [
+                story(
+                    2000 + index,
+                    "world_news",
+                    f"Fresh {region} headline",
+                    region=region,
+                    published_at="2026-08-02T01:00:00+00:00",
+                )
+            ]
+            for index, region in enumerate(["europe", "china", "us", "japan", "korea"])
+        }
+
+    def list_stories_by_category_region(self, category, region, limit=100):
+        if category != "world_news":
+            return []
+        return self.regional.get(region, [])[:limit]
+
+    def list_stories_by_category(self, category, limit=20, unique_by_source=False):
+        return []
+
+    def list_stories(self, limit=20, query=""):
+        return []
+
+    def list_story_briefing_counts(self):
+        return {}
+
+
 class PipelineSelectionTests(unittest.TestCase):
+    def test_daily_selection_recalls_each_world_region_before_global_ranking(self):
+        app = NewsAgentApp.__new__(NewsAgentApp)
+        app.settings = {
+            "briefing": {
+                "lookback_hours": 0,
+                "regional_candidate_limit": 100,
+                "world_region_limit": 5,
+                "world_region_minimum": 1,
+            }
+        }
+        app.db = RegionalCandidateDB()
+
+        selected = app._select_stories(90)
+        selected_regions = {
+            item["region"]
+            for item in selected
+            if item["category"] == "world_news"
+        }
+
+        self.assertEqual(
+            selected_regions,
+            {"europe", "china", "us", "japan", "korea"},
+        )
+
+    def test_each_region_uses_recent_repeat_fallback_when_no_fresh_story_exists(self):
+        regions = ["europe", "china", "us", "japan", "korea"]
+        candidates = [
+            story(
+                2100 + index,
+                "world_news",
+                f"Repeated {region} headline",
+                region=region,
+                published_at="2026-08-02T01:00:00+00:00",
+            )
+            for index, region in enumerate(regions)
+        ]
+
+        selected = select_briefing_stories(
+            candidates,
+            max_stories=90,
+            story_briefing_counts={item["id"]: 2 for item in candidates},
+            repeat_backfill_limit=5,
+        )
+        body = fallback_briefing(selected, "original")
+        regional_section = body.split(
+            "## Important mainstream news by region — Top 5",
+            1,
+        )[1].split("## Selection logic", 1)[0]
+
+        self.assertEqual(
+            {item["region"] for item in selected},
+            set(regions),
+        )
+        self.assertTrue(all(item.get("regional_repeat_fallback") for item in selected))
+        for label in ["Europe", "China", "United States", "Japan", "South Korea"]:
+            self.assertIn(f"### {label}", regional_section)
+
     def test_select_stories_prepends_exact_market_snapshots(self):
         app = NewsAgentApp.__new__(NewsAgentApp)
         app.settings = {"briefing": {"lookback_hours": 0}}
@@ -256,6 +343,72 @@ class PipelineSelectionTests(unittest.TestCase):
         self.assertLess(selected_ids.index(401), selected_ids.index(400))
         self.assertLess(selected_ids.index(402), selected_ids.index(400))
         self.assertLess(selected_ids.index(403), selected_ids.index(400))
+
+    def test_medical_slots_prioritize_llm_and_machine_learning_terms(self):
+        candidates = [
+            story(
+                410,
+                "medicine",
+                "General healthcare operations update",
+                score=999,
+                published_at="2026-06-27T03:00:00+00:00",
+            ),
+            story(
+                411,
+                "medicine",
+                "LLM framework for clinical decision support",
+                score=20,
+                published_at="2026-06-27T01:00:00+00:00",
+            ),
+            story(
+                412,
+                "medicine",
+                "Causal machine learning for treatment planning",
+                score=20,
+                published_at="2026-06-27T02:00:00+00:00",
+            ),
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        selected_ids = [item["id"] for item in selected]
+
+        self.assertLess(selected_ids.index(411), selected_ids.index(410))
+        self.assertLess(selected_ids.index(412), selected_ids.index(410))
+
+    def test_llm_focus_term_expands_question_query(self):
+        expanded = expand_query("latest LLM clinical research")
+
+        self.assertIn("medicine", expanded)
+        self.assertIn("large language model", expanded)
+
+    def test_medical_slots_give_ai_agent_terms_extra_priority(self):
+        candidates = [
+            story(
+                420,
+                "medicine",
+                "Artificial intelligence for clinical decision support",
+                score=999,
+                published_at="2026-06-27T03:00:00+00:00",
+            ),
+            story(
+                421,
+                "medicine",
+                "Multi-agent framework for clinical decision support",
+                score=20,
+                published_at="2026-06-27T01:00:00+00:00",
+            ),
+        ]
+
+        selected = select_briefing_stories(candidates, max_stories=65)
+        selected_ids = [item["id"] for item in selected]
+
+        self.assertLess(selected_ids.index(421), selected_ids.index(420))
+
+    def test_ai_agent_focus_term_expands_question_query(self):
+        expanded = expand_query("latest agentic AI research")
+
+        self.assertIn("medicine", expanded)
+        self.assertIn("ai agents", expanded)
 
     def test_medical_focus_terms_expand_question_query(self):
         expanded = expand_query("神经系统 AI 和认知研究")

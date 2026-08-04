@@ -12,13 +12,13 @@ Detected hardware:
 
 Recommended MVP model:
 
-- Primary: `qwen3:8b` via Ollama
-- Optional stronger model to try later: `gpt-oss:20b` or a Qwen 14B quantized model if latency is acceptable
+- Primary: `qwen3:30bq3` via Ollama (Qwen3-30B-A3B Q3_K_M)
+- Fallback: `qwen3:8b` when memory pressure or latency is unacceptable
 
 Install Ollama, then run:
 
 ```powershell
-ollama pull qwen3:8b
+ollama show qwen3:30bq3
 ollama serve
 ```
 
@@ -85,6 +85,27 @@ Feedback affects future ranking:
 - `track_more`: boosts this story and future similar items more than ordinary interest.
 - `show_less`: lowers this story and similar category/tag matches.
 - `irrelevant`: strongly lowers this story and similar matches.
+
+## Briefing size and regional coverage
+
+The default brief allows up to 90 selected items. World news is recalled separately
+for Europe, China, the United States, Japan, and South Korea so historical high-score
+items from one region cannot crowd out fresh stories from another. Each region can
+show up to five stories and, when it has any recent candidate, receives at least one.
+
+These values can be adjusted in `config/settings.json`:
+
+```json
+{
+  "briefing": {
+    "max_stories": 90,
+    "lookback_hours": 48,
+    "regional_candidate_limit": 100,
+    "world_region_limit": 5,
+    "world_region_minimum": 1
+  }
+}
+```
 
 ## Email delivery
 
