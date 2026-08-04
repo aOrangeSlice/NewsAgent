@@ -4,7 +4,7 @@ Local-first market, policy, AI, and healthcare intelligence agent.
 
 ## Recommended local LLM
 
-Detected hardware:
+Developer hardware:
 
 - CPU: AMD Ryzen 9 9950X, 16 cores / 32 threads
 - RAM: about 32 GB
@@ -34,7 +34,7 @@ python -m newsagent secrets-scan
 python -m newsagent collect --limit 30
 python -m newsagent source-health
 python -m newsagent brief --output-language zh
-python -m newsagent ask "What are the most important AI infrastructure stories?" --language en
+python -m newsagent ask "AIインフラに関する最も重要なトピックは何でしょうか？" --language ja
 ```
 
 `init-config` creates `config/settings.json` from
@@ -143,7 +143,7 @@ python -m newsagent secrets-scan
 Generate and send a daily brief:
 
 ```powershell
-python -m newsagent daily --output-language zh --email
+python -m newsagent daily --output-language original --email
 ```
 
 Send the latest generated brief again:
@@ -184,7 +184,7 @@ Important: Windows Task Scheduler can run only when this computer is powered on.
 Keep the same SMTP configuration and run:
 
 ```powershell
-python -m newsagent daily --output-language zh --email
+python -m newsagent daily --output-language original --email
 ```
 
 ## Development and testing
