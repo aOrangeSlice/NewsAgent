@@ -1,3 +1,5 @@
-# MVP uses only Python standard library.
-# Optional runtime dependency outside pip: Ollama for local LLM inference.
+# Google Cloud dependencies are imported lazily, so local Ollama-only commands
+# remain usable even when these packages are not installed outside the image.
+google-cloud-storage>=2.18,<4
+google-genai>=1.0,<2
 

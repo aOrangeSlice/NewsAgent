@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 from uuid import uuid4
 
-from .config import DEFAULT_SETTINGS, ROOT, ensure_settings_file
+from .config import DEFAULT_SETTINGS, ROOT, ensure_settings_file, load_settings
 from .models import tokyo_now_iso
 from .pipeline import NewsAgentApp
 from .security import scan_for_secrets
@@ -52,6 +54,128 @@ def print_source_health(rows: list[dict[str, object]]) -> None:
         print(" ".join(values))
 
 
+def add_daily_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-language",
+        "--language",
+        dest="output_language",
+        choices=["original", "zh", "en", "ja"],
+        default=None,
+        help="Brief output language. --language remains as a compatibility alias.",
+    )
+    parser.add_argument("--collect-limit", type=int, default=None)
+    parser.add_argument("--brief-limit", type=int, default=None)
+    parser.add_argument("--email", action="store_true", help="Send the generated brief by email.")
+
+
+def run_daily_with_logs(
+    app: NewsAgentApp,
+    args: argparse.Namespace,
+    run_id: str | None = None,
+) -> dict[str, object]:
+    run_id = run_id or uuid4().hex
+    emit_pipeline_log(
+        app,
+        run_id,
+        "INFO",
+        "run_started",
+        command=args.command,
+        output_language=args.output_language,
+        collect_limit=args.collect_limit,
+        brief_limit=args.brief_limit,
+        email=args.email,
+    )
+    try:
+        briefing_id, _body, collect_result, path, email_result = app.daily(
+            output_language=args.output_language,
+            collect_limit=args.collect_limit,
+            brief_limit=args.brief_limit,
+            email=args.email,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        emit_pipeline_log(app, run_id, "ERROR", "run_failed", error=str(exc))
+        raise
+
+    summary = getattr(app, "last_daily_summary", {})
+    collect_summary = summary.get("collect", collect_result)
+    briefing_summary = summary.get("briefing", {})
+    emit_pipeline_log(app, run_id, "INFO", "collect_finished", **collect_summary)
+    for source_error in collect_summary.get("errors", []):
+        emit_pipeline_log(app, run_id, "WARNING", "source_failed", **source_error)
+    if (
+        briefing_summary.get("min_stories", 0)
+        and briefing_summary.get("story_count", 0) < briefing_summary.get("min_stories", 0)
+    ):
+        emit_pipeline_log(
+            app,
+            run_id,
+            "WARNING",
+            "briefing_below_min_stories",
+            story_count=briefing_summary.get("story_count", 0),
+            min_stories=briefing_summary.get("min_stories", 0),
+        )
+    emit_pipeline_log(app, run_id, "INFO", "briefing_created", **briefing_summary)
+    if email_result is not None:
+        email_level = "INFO" if email_result.get("ok") else "ERROR"
+        emit_pipeline_log(app, run_id, email_level, "email_finished", **email_result)
+    emit_pipeline_log(
+        app,
+        run_id,
+        "INFO",
+        "run_finished",
+        briefing_id=briefing_id,
+        outbox_path=str(path),
+        exit_code=0,
+    )
+    return {
+        "briefing_id": briefing_id,
+        "path": path,
+        "email_result": email_result,
+    }
+
+
+def run_cloud_daily(args: argparse.Namespace) -> None:
+    from .cloud_state import CloudStateStore
+
+    settings = load_settings()
+    database_path = Path(settings["database"]["path"])
+    state = CloudStateStore.from_environment(database_path)
+    run_id = uuid4().hex
+    ttl_seconds = int(os.environ.get("NEWSAGENT_LOCK_TTL_SECONDS", "4500"))
+    snapshot_path = database_path.parent / ".newsagent-cloud-snapshot.db"
+
+    with state.lease(run_id, ttl_seconds=ttl_seconds):
+        restored = state.restore_database()
+        emit_log(
+            "INFO",
+            "cloud_state_restored",
+            run_id=run_id,
+            restored=restored,
+            generation=state.state_generation,
+        )
+        app = NewsAgentApp()
+        try:
+            result = run_daily_with_logs(app, args, run_id=run_id)
+            app.db.backup_to(snapshot_path)
+            generation = state.upload_database(snapshot_path)
+            uploaded_files = state.upload_outbox(database_path.parent / "outbox")
+            emit_pipeline_log(
+                app,
+                run_id,
+                "INFO",
+                "cloud_state_saved",
+                generation=generation,
+                outbox_files=uploaded_files,
+            )
+            email_result = result.get("email_result")
+            if args.email and isinstance(email_result, dict) and not email_result.get("ok"):
+                raise RuntimeError("Email delivery failed; cloud state was saved without retrying SMTP")
+        finally:
+            app.close()
+            snapshot_path.unlink(missing_ok=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -87,17 +211,13 @@ def main(argv: list[str] | None = None) -> None:
     brief_p.add_argument("--limit", type=int, default=None)
 
     daily_p = sub.add_parser("daily", help="Run collect + brief and write Markdown to data/outbox.")
-    daily_p.add_argument(
-        "--output-language",
-        "--language",
-        dest="output_language",
-        choices=["original", "zh", "en", "ja"],
-        default=None,
-        help="Brief output language. --language remains as a compatibility alias.",
+    add_daily_arguments(daily_p)
+
+    cloud_daily_p = sub.add_parser(
+        "cloud-daily",
+        help="Run the daily pipeline with a locked Cloud Storage SQLite snapshot.",
     )
-    daily_p.add_argument("--collect-limit", type=int, default=None)
-    daily_p.add_argument("--brief-limit", type=int, default=None)
-    daily_p.add_argument("--email", action="store_true", help="Send the generated brief by email.")
+    add_daily_arguments(cloud_daily_p)
 
     send_p = sub.add_parser("send-latest", help="Send data/outbox/latest.md by email.")
     send_p.add_argument("--subject", default="NewsAgent Daily Brief")
@@ -134,6 +254,9 @@ def main(argv: list[str] | None = None) -> None:
         if findings:
             raise SystemExit(1)
         return
+    if args.command == "cloud-daily":
+        run_cloud_daily(args)
+        return
 
     app = NewsAgentApp()
     try:
@@ -158,61 +281,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"Briefing #{briefing_id}\n")
             print(body)
         elif args.command == "daily":
-            run_id = uuid4().hex
-            emit_pipeline_log(
-                app,
-                run_id,
-                "INFO",
-                "run_started",
-                command="daily",
-                output_language=args.output_language,
-                collect_limit=args.collect_limit,
-                brief_limit=args.brief_limit,
-                email=args.email,
-            )
-            try:
-                briefing_id, _body, collect_result, path, email_result = app.daily(
-                    output_language=args.output_language,
-                    collect_limit=args.collect_limit,
-                    brief_limit=args.brief_limit,
-                    email=args.email,
-                    run_id=run_id,
-                )
-            except Exception as exc:
-                emit_pipeline_log(app, run_id, "ERROR", "run_failed", error=str(exc))
-                raise
-
-            summary = getattr(app, "last_daily_summary", {})
-            collect_summary = summary.get("collect", collect_result)
-            briefing_summary = summary.get("briefing", {})
-            emit_pipeline_log(app, run_id, "INFO", "collect_finished", **collect_summary)
-            for source_error in collect_summary.get("errors", []):
-                emit_pipeline_log(app, run_id, "WARNING", "source_failed", **source_error)
-            if (
-                briefing_summary.get("min_stories", 0)
-                and briefing_summary.get("story_count", 0) < briefing_summary.get("min_stories", 0)
-            ):
-                emit_pipeline_log(
-                    app,
-                    run_id,
-                    "WARNING",
-                    "briefing_below_min_stories",
-                    story_count=briefing_summary.get("story_count", 0),
-                    min_stories=briefing_summary.get("min_stories", 0),
-                )
-            emit_pipeline_log(app, run_id, "INFO", "briefing_created", **briefing_summary)
-            if email_result is not None:
-                email_level = "INFO" if email_result.get("ok") else "ERROR"
-                emit_pipeline_log(app, run_id, email_level, "email_finished", **email_result)
-            emit_pipeline_log(
-                app,
-                run_id,
-                "INFO",
-                "run_finished",
-                briefing_id=briefing_id,
-                outbox_path=str(path),
-                exit_code=0,
-            )
+            run_daily_with_logs(app, args)
         elif args.command == "send-latest":
             from pathlib import Path
 

@@ -187,10 +187,30 @@ Keep the same SMTP configuration and run:
 python -m newsagent daily --output-language original --email
 ```
 
+## Google Cloud deployment
+
+NewsAgent can run as a scheduled Cloud Run Job with Cloud Storage state and
+Gemini on Vertex AI. The cloud command restores a versioned SQLite snapshot,
+prevents overlapping writers with a generation-checked lock, runs the normal
+daily pipeline, and uploads the database plus Markdown outbox.
+
+Start with email and scheduling disabled:
+
+```powershell
+.\scripts\deploy_gcp.ps1 -ProjectId "YOUR_PROJECT_ID"
+.\scripts\run_gcp_job.ps1 -ProjectId "YOUR_PROJECT_ID"
+.\scripts\logs_gcp.ps1 -ProjectId "YOUR_PROJECT_ID"
+```
+
+After the smoke test, add the SMTP secret and enable delivery and scheduling.
+See `docs/GCP_DEPLOYMENT.md` for the complete staged deployment, IAM, rollback,
+budget alert, and cleanup instructions.
+
 ## Development and testing
 
-The MVP uses only the Python standard library. Run the automated test suite and
-local security preflight with:
+The local data pipeline uses the Python standard library. The container also
+installs the Google Gen AI and Cloud Storage SDKs for optional cloud execution.
+Run the automated test suite and local security preflight with:
 
 ```powershell
 python -m unittest discover -s tests -v

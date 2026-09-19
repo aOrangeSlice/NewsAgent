@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS llm_runs (
     model TEXT NOT NULL,
     ok INTEGER NOT NULL,
     error TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    elapsed_seconds REAL,
+    metrics_json TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -174,6 +178,10 @@ class Database:
             "TEXT NOT NULL DEFAULT 'legacy'",
         )
         self._ensure_column("briefings", "translation_model", "TEXT")
+        self._ensure_column("llm_runs", "input_tokens", "INTEGER")
+        self._ensure_column("llm_runs", "output_tokens", "INTEGER")
+        self._ensure_column("llm_runs", "elapsed_seconds", "REAL")
+        self._ensure_column("llm_runs", "metrics_json", "TEXT")
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -236,6 +244,17 @@ class Database:
 
     def commit(self) -> None:
         self.conn.commit()
+
+    def backup_to(self, path: str | Path) -> Path:
+        """Write a consistent single-file SQLite snapshot, including WAL data."""
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = sqlite3.connect(destination)
+        try:
+            self.conn.backup(snapshot)
+        finally:
+            snapshot.close()
+        return destination
 
     def get_unclustered_raw_items(self) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -583,10 +602,33 @@ class Database:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def log_llm_run(self, provider: str, model: str, ok: bool, error: str = "") -> None:
+    def log_llm_run(
+        self,
+        provider: str,
+        model: str,
+        ok: bool,
+        error: str = "",
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        metrics = metrics or {}
         self.conn.execute(
-            "INSERT INTO llm_runs (provider, model, ok, error, created_at) VALUES (?, ?, ?, ?, ?)",
-            (provider, model, int(ok), error[:500], tokyo_now_iso()),
+            """
+            INSERT INTO llm_runs
+                (provider, model, ok, error, input_tokens, output_tokens,
+                 elapsed_seconds, metrics_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                provider,
+                model,
+                int(ok),
+                error[:500],
+                metrics.get("input_tokens"),
+                metrics.get("output_tokens"),
+                metrics.get("elapsed_seconds"),
+                json.dumps(metrics, ensure_ascii=False) if metrics else None,
+                tokyo_now_iso(),
+            ),
         )
         self.conn.commit()
 
