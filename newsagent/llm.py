@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from urllib import error, request
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import html
 import json
+import os
 import re
 import time
 import unicodedata
@@ -90,12 +91,37 @@ MARKET_REGION_LABELS_EN = {
 }
 
 
+class TextGenerationClient(Protocol):
+    model: str
+
+    def available(self) -> bool: ...
+
+    def generate(self, prompt: str) -> str: ...
+
+    def drain_metrics(self) -> list[dict[str, Any]]: ...
+
+
+class GenerationBudgetExceeded(RuntimeError):
+    pass
+
+
 class OllamaClient:
-    def __init__(self, base_url: str, model: str, temperature: float = 0.2, num_ctx: int = 8192):
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        temperature: float = 0.2,
+        num_ctx: int = 8192,
+        max_calls: int = 12,
+        max_output_tokens: int = 4096,
+    ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.temperature = temperature
         self.num_ctx = num_ctx
+        self.max_calls = max_calls
+        self.max_output_tokens = max_output_tokens
+        self.call_count = 0
         self.metrics_history: list[dict[str, Any]] = []
 
     def available(self) -> bool:
@@ -107,6 +133,7 @@ class OllamaClient:
             return False
 
     def generate(self, prompt: str) -> str:
+        self._consume_call()
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -114,6 +141,7 @@ class OllamaClient:
             "options": {
                 "temperature": self.temperature,
                 "num_ctx": self.num_ctx,
+                "num_predict": self.max_output_tokens,
             },
         }
         data = json.dumps(payload).encode("utf-8")
@@ -129,7 +157,22 @@ class OllamaClient:
                 self.metrics_history.append(self._extract_metrics(body, time.perf_counter() - started))
                 return body.get("response", "").strip()
         except error.HTTPError as exc:
+            self.metrics_history.append(
+                {"elapsed_seconds": round(time.perf_counter() - started, 3)}
+            )
             raise RuntimeError(exc.read().decode("utf-8", errors="replace")) from exc
+        except Exception:
+            self.metrics_history.append(
+                {"elapsed_seconds": round(time.perf_counter() - started, 3)}
+            )
+            raise
+
+    def _consume_call(self) -> None:
+        if self.call_count >= self.max_calls:
+            raise GenerationBudgetExceeded(
+                f"LLM call budget exhausted ({self.max_calls} calls per run)"
+            )
+        self.call_count += 1
 
     def drain_metrics(self) -> list[dict[str, Any]]:
         metrics = list(self.metrics_history)
@@ -153,6 +196,149 @@ class OllamaClient:
         return metrics
 
 
+class VertexAIClient:
+    """Gemini on Vertex AI via ADC and the Google Gen AI SDK."""
+
+    def __init__(
+        self,
+        project: str,
+        location: str,
+        model: str,
+        temperature: float = 0.2,
+        max_calls: int = 12,
+        max_output_tokens: int = 4096,
+    ):
+        self.project = project
+        self.location = location or "global"
+        self.model = model
+        self.temperature = temperature
+        self.max_calls = max_calls
+        self.max_output_tokens = max_output_tokens
+        self.call_count = 0
+        self.metrics_history: list[dict[str, Any]] = []
+        self._client: Any | None = None
+        self._types: Any | None = None
+
+    def _ensure_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        if not self.project:
+            raise RuntimeError("GOOGLE_CLOUD_PROJECT is required for the Vertex AI provider")
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError as exc:
+            raise RuntimeError("google-genai is required for the Vertex AI provider") from exc
+        self._types = types
+        self._client = genai.Client(
+            vertexai=True,
+            project=self.project,
+            location=self.location,
+            http_options=types.HttpOptions(api_version="v1"),
+        )
+        return self._client
+
+    def available(self) -> bool:
+        try:
+            self._ensure_client()
+            return True
+        except Exception:
+            return False
+
+    def generate(self, prompt: str) -> str:
+        if self.call_count >= self.max_calls:
+            raise GenerationBudgetExceeded(
+                f"LLM call budget exhausted ({self.max_calls} calls per run)"
+            )
+        self.call_count += 1
+        client = self._ensure_client()
+        started = time.perf_counter()
+        try:
+            response = client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=self._types.GenerateContentConfig(
+                    temperature=self.temperature,
+                    max_output_tokens=self.max_output_tokens,
+                ),
+            )
+            elapsed = time.perf_counter() - started
+            self.metrics_history.append(self._extract_metrics(response, elapsed))
+            return str(getattr(response, "text", "") or "").strip()
+        except Exception:
+            self.metrics_history.append(
+                {"elapsed_seconds": round(time.perf_counter() - started, 3)}
+            )
+            raise
+
+    def drain_metrics(self) -> list[dict[str, Any]]:
+        metrics = list(self.metrics_history)
+        self.metrics_history.clear()
+        return metrics
+
+    @staticmethod
+    def _extract_metrics(response: Any, elapsed_seconds: float) -> dict[str, Any]:
+        usage = getattr(response, "usage_metadata", None)
+        return {
+            "input_tokens": getattr(usage, "prompt_token_count", None),
+            "output_tokens": getattr(usage, "candidates_token_count", None),
+            "total_tokens": getattr(usage, "total_token_count", None),
+            "thoughts_tokens": getattr(usage, "thoughts_token_count", None),
+            "elapsed_seconds": round(elapsed_seconds, 3),
+        }
+
+
+def build_generation_client(settings: dict[str, Any]) -> TextGenerationClient:
+    provider = str(settings.get("provider", "ollama")).strip().lower()
+    common = {
+        "model": str(settings.get("model", "qwen3:30bq3")),
+        "temperature": float(settings.get("temperature", 0.2)),
+        "max_calls": int(settings.get("max_calls_per_run", 12)),
+        "max_output_tokens": int(settings.get("max_output_tokens", 4096)),
+    }
+    if provider == "vertex":
+        return VertexAIClient(
+            project=str(settings.get("project") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")),
+            location=str(settings.get("location") or os.environ.get("GOOGLE_CLOUD_LOCATION", "global")),
+            **common,
+        )
+    if provider == "ollama":
+        return OllamaClient(
+            base_url=str(settings.get("base_url", "http://localhost:11434")),
+            num_ctx=int(settings.get("num_ctx", 8192)),
+            **common,
+        )
+    raise ValueError(f"Unsupported LLM provider: {provider}")
+
+
+def aggregate_generation_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {}
+
+    def total(*names: str) -> int | None:
+        values = [
+            row.get(name)
+            for row in rows
+            for name in names
+            if isinstance(row.get(name), (int, float))
+        ]
+        return int(sum(values)) if values else None
+
+    elapsed_values = [
+        row.get("elapsed_seconds")
+        for row in rows
+        if isinstance(row.get("elapsed_seconds"), (int, float))
+    ]
+    return {
+        "call_count": len(rows),
+        "input_tokens": total("input_tokens", "prompt_eval_count"),
+        "output_tokens": total("output_tokens", "eval_count"),
+        "total_tokens": total("total_tokens"),
+        "elapsed_seconds": round(sum(elapsed_values), 3) if elapsed_values else None,
+        "calls": rows,
+    }
+
+
 class Summarizer:
     def __init__(self, settings: dict[str, Any], db: Any | None = None):
         self.settings = settings
@@ -160,12 +346,9 @@ class Summarizer:
         self.provider = llm_settings.get("provider", "ollama")
         self.model = llm_settings.get("model", "qwen3:30bq3")
         self.db = db
-        self.ollama = OllamaClient(
-            base_url=llm_settings.get("base_url", "http://localhost:11434"),
-            model=self.model,
-            temperature=float(llm_settings.get("temperature", 0.2)),
-            num_ctx=int(llm_settings.get("num_ctx", 8192)),
-        )
+        self.client = build_generation_client(llm_settings)
+        # Compatibility for existing integrations that inspect ``.ollama``.
+        self.ollama = self.client
 
     def create_briefing(
         self,
@@ -217,10 +400,10 @@ class Summarizer:
         )
         if not should_use_llm:
             return fallback_briefing(stories, "original"), "deterministic"
-        if self.ollama.available():
+        if self.client.available():
             prompt = build_briefing_prompt(stories, "original")
             try:
-                result = self.ollama.generate(prompt)
+                result = self.client.generate(prompt)
                 cleaned = enforce_deterministic_market_section(
                     clean_model_output(result),
                     stories,
@@ -236,11 +419,11 @@ class Summarizer:
                         + ",".join(validation_reasons)
                     )
                 if self.db:
-                    self.db.log_llm_run(self.provider, self.model, True)
+                    self._log_llm_run(True)
                 return cleaned, "generated"
             except Exception as exc:
                 if self.db:
-                    self.db.log_llm_run(self.provider, self.model, False, str(exc))
+                    self._log_llm_run(False, str(exc))
         return fallback_briefing(stories, "original"), "fallback_rules"
 
     def translate_briefing(self, canonical_body: str, output_language: str) -> tuple[str, str]:
@@ -249,7 +432,7 @@ class Summarizer:
             return canonical_body, "not_requested"
 
         translation_settings = self.settings.get("translation", {})
-        if translation_settings.get("enabled", True) and self.ollama.available():
+        if translation_settings.get("enabled", True) and self.client.available():
             try:
                 result = self.translate_markdown_in_chunks(
                     canonical_body,
@@ -258,12 +441,12 @@ class Summarizer:
                 )
                 if validate_translation(canonical_body, result):
                     if self.db:
-                        self.db.log_llm_run(self.provider, self.model, True)
+                        self._log_llm_run(True)
                     return result, "translated"
                 raise ValueError("translated briefing changed or removed protected references")
             except Exception as exc:
                 if self.db:
-                    self.db.log_llm_run(self.provider, self.model, False, f"translation: {exc}")
+                    self._log_llm_run(False, f"translation: {exc}")
 
         partial = localize_briefing_structure(canonical_body, output_language)
         warning = translation_fallback_warning(output_language)
@@ -285,7 +468,7 @@ class Summarizer:
                 chunk_index=chunk_index,
                 chunk_count=len(chunks),
             )
-            translated = clean_model_output(self.ollama.generate(prompt))
+            translated = clean_model_output(self.client.generate(prompt))
             restored = restore_translation_tokens(translated, replacements)
             if not validate_translation(chunk, restored):
                 raise ValueError(
@@ -298,13 +481,13 @@ class Summarizer:
     def answer_question(self, question: str, stories: list[dict[str, Any]], language: str = "zh") -> str:
         language = normalize_output_language(language)
         fallback_reason = "llm_unavailable"
-        if self.ollama.available():
+        if self.client.available():
             fallback_reason = "answer_validation_failed"
             prompt = build_answer_prompt(question, stories, language)
             try:
-                result = self.ollama.generate(prompt)
+                result = self.client.generate(prompt)
                 if self.db:
-                    self.db.log_llm_run(self.provider, self.model, True)
+                    self._log_llm_run(True)
                 cleaned = clean_model_output(result)
                 if answer_matches_language(cleaned, language) and answer_cites_known_sources(cleaned, stories):
                     return cleaned
@@ -320,7 +503,7 @@ class Summarizer:
             except Exception as exc:
                 fallback_reason = "llm_unavailable"
                 if self.db:
-                    self.db.log_llm_run(self.provider, self.model, False, str(exc))
+                    self._log_llm_run(False, str(exc))
         return fallback_answer(question, stories, language, reason=fallback_reason)
 
     def log_answer_validation_failure(
@@ -340,9 +523,7 @@ class Summarizer:
         if not (text or "").strip():
             reasons.append("empty")
         reason_text = ",".join(reasons) or "unknown"
-        self.db.log_llm_run(
-            self.provider,
-            self.model,
+        self._log_llm_run(
             False,
             f"answer validation failed: stage={stage}; reason={reason_text}; target_language={language}",
         )
@@ -352,13 +533,13 @@ class Summarizer:
         if language == "original":
             return answer
         try:
-            result = self.ollama.generate(build_answer_rewrite_prompt(answer, language))
+            result = self.client.generate(build_answer_rewrite_prompt(answer, language))
             if self.db:
-                self.db.log_llm_run(self.provider, self.model, True)
+                self._log_llm_run(True)
             return clean_model_output(result)
         except Exception as exc:
             if self.db:
-                self.db.log_llm_run(self.provider, self.model, False, f"answer language rewrite: {exc}")
+                self._log_llm_run(False, f"answer language rewrite: {exc}")
             return answer
 
     def regenerate_answer_from_evidence(
@@ -369,14 +550,31 @@ class Summarizer:
     ) -> str:
         language = normalize_output_language(language)
         try:
-            result = self.ollama.generate(build_answer_regeneration_prompt(question, stories, language))
+            result = self.client.generate(build_answer_regeneration_prompt(question, stories, language))
             if self.db:
-                self.db.log_llm_run(self.provider, self.model, True)
+                self._log_llm_run(True)
             return clean_model_output(result)
         except Exception as exc:
             if self.db:
-                self.db.log_llm_run(self.provider, self.model, False, f"answer regeneration: {exc}")
+                self._log_llm_run(False, f"answer regeneration: {exc}")
             return ""
+
+    def _log_llm_run(self, ok: bool, error_text: str = "") -> None:
+        if not self.db:
+            return
+        metrics = aggregate_generation_metrics(self.client.drain_metrics())
+        try:
+            self.db.log_llm_run(
+                self.provider,
+                self.model,
+                ok,
+                error_text,
+                metrics=metrics,
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument 'metrics'" not in str(exc):
+                raise
+            self.db.log_llm_run(self.provider, self.model, ok, error_text)
 
 
 def build_briefing_prompt(stories: list[dict[str, Any]], language: str) -> str:

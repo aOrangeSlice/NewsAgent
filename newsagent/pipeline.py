@@ -393,13 +393,19 @@ class NewsAgentApp:
         llm = self.settings.get("llm", {})
         delivery = self.settings.get("delivery", {}).get("email", {})
         secret_findings = scan_for_secrets(ROOT)
+        llm_available = self.summarizer.client.available()
         return {
             "database": self.settings["database"]["path"],
             "sources": len(self.sources),
             "enabled_sources": len([s for s in self.sources if s.enabled]),
             "llm_provider": llm.get("provider"),
             "llm_model": llm.get("model"),
-            "ollama_available": self.summarizer.ollama.available(),
+            "llm_available": llm_available,
+            "ollama_available": (
+                llm_available if str(llm.get("provider", "ollama")).lower() == "ollama" else False
+            ),
+            "llm_max_calls_per_run": int(llm.get("max_calls_per_run", 12)),
+            "llm_max_output_tokens": int(llm.get("max_output_tokens", 4096)),
             "email_enabled": bool(delivery.get("enabled", False)),
             "email_configured": EmailDelivery.is_configured(delivery),
             "secret_scan_ok": not secret_findings,

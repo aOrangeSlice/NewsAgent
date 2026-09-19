@@ -128,4 +128,25 @@ python -m unittest discover -s tests -v
 python -m newsagent secrets-scan
 ```
 
-The MVP intentionally avoids pip dependencies; `pytest` is not required.
+The cloud container installs `google-genai` and `google-cloud-storage`;
+`pytest` is not required.
+
+## Google Cloud operations
+
+The Cloud Run entrypoint is:
+
+```powershell
+python -m newsagent cloud-daily --output-language zh --email
+```
+
+Use the checked-in scripts for routine operations:
+
+```powershell
+.\scripts\run_gcp_job.ps1 -ProjectId "YOUR_PROJECT_ID"
+.\scripts\logs_gcp.ps1 -ProjectId "YOUR_PROJECT_ID" -Limit 200
+```
+
+The job has no automatic retry. If it fails, inspect Cloud Logging before
+rerunning it; this avoids duplicate SMTP delivery. State and outbox objects are
+stored under `gs://PROJECT_ID-newsagent-state/newsagent/`. See
+`docs/GCP_DEPLOYMENT.md` for deployment, rollback, and resource cleanup.

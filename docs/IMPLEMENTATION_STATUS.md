@@ -20,6 +20,7 @@ This file records what the local MVP currently does, what is partial, and what r
 | Preferred edition | `briefing.use_llm` chooses the printed `latest.md` edition but does not stop the other edition from being generated and stored. |
 | Email | SMTP email delivery, `send-latest`, and daily email variant behavior. |
 | Windows automation | PowerShell scripts for local scheduled daily email runs. |
+| Google Cloud runtime | Cloud Run Job command, Cloud Storage SQLite snapshot/locking, Vertex AI provider, Secret Manager-compatible environment configuration, and `gcloud` deployment scripts. |
 | Feedback | `important`, `track_more`, `show_less`, and `irrelevant` are stored and influence future ranking. |
 | Operational logs | Pipeline logs, source collection logs, delivery logs, and LLM run telemetry. |
 | Source health | `source-health` summarizes recent per-source runs from `source_collection_logs`. |
@@ -35,6 +36,7 @@ This file records what the local MVP currently does, what is partial, and what r
 | Retention settings | Retention values exist in configuration. | No cleanup command currently enforces them. |
 | Source health | Source failures are logged and visible in `source-health`. | No automatic disabling or external alerting. |
 | Security checks | SMTP password can be read from an environment variable; `secrets-scan` covers common local leakage patterns. | Not a replacement for a full repository secret-scanning service. |
+| Cloud alerting | Deployment creates an error log metric and attempts to create a Monitoring alert policy. | A notification channel and billing-account permissions must be supplied by the operator. |
 
 ## Planned
 
