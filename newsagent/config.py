@@ -67,6 +67,7 @@ def apply_environment_overrides(settings: dict[str, Any]) -> dict[str, Any]:
         "NEWSAGENT_SMTP_PORT": ("delivery", "email", "port"),
     }
     boolean_overrides = {
+        "NEWSAGENT_BRIEFING_USE_LLM": ("briefing", "use_llm"),
         "NEWSAGENT_EMAIL_ENABLED": ("delivery", "email", "enabled"),
         "NEWSAGENT_SMTP_USE_TLS": ("delivery", "email", "use_tls"),
     }

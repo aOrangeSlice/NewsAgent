@@ -169,7 +169,8 @@ class NewsAgentApp:
         group = uuid4().hex
         story_ids = [story["id"] for story in stories]
         variants: list[dict[str, Any]] = []
-        for use_llm in (False, True):
+        modes = (False, True) if self.settings.get("briefing", {}).get("use_llm", True) else (False,)
+        for use_llm in modes:
             briefing = self.summarizer.create_briefing(
                 stories,
                 output_language=output_language,

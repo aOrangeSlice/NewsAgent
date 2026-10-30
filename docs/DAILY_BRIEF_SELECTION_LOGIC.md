@@ -105,7 +105,7 @@ python -m newsagent daily --output-language original --email
 
 ### 7. 简报输出
 
-每次 daily 会生成两版：`rules` 和 `llm`。`output-language original` 不翻译正文，但会加入数据新鲜度区块。Rules 版直接按地区渲染；LLM 版生成后也会强制插入同一份确定性地区新闻段，确保模型不会省略任何已选地区。空的 LLM 结果会回退到规则版。
+默认 `briefing.use_llm = false`，daily 只生成并发送规则版，中文翻译仍使用模型。设为 true 时才额外生成 `llm` 版。`output-language original` 不翻译正文，但会加入数据新鲜度区块。Rules 版直接按地区渲染；LLM 版生成后也会强制插入同一份确定性地区新闻段，确保模型不会省略任何已选地区。空的 LLM 结果会回退到规则版。
 
 | 逻辑 | 生成结果 | 对应 DB 表和文件 |
 |---|---|---|
@@ -221,7 +221,7 @@ python -m newsagent daily --output-language original --email
 
 ### 7. ブリーフ出力
 
-daily は毎回 `rules` と `llm` の 2 版を生成します。rules 版は地域別セクションを直接描画し、LLM 版にも生成後に同じ決定論的な地域別セクションを挿入します。そのため、モデルが選択済み地域を省略することはありません。LLM 結果が空の場合は rules 版へフォールバックします。
+既定の `briefing.use_llm = false` では、daily は rules 版のみを生成・送信し、中国語翻訳には引き続きモデルを使用します。true の場合のみ llm 版も生成します。rules 版は地域別セクションを直接描画し、LLM 版にも生成後に同じ決定論的な地域別セクションを挿入します。そのため、モデルが選択済み地域を省略することはありません。LLM 結果が空の場合は rules 版へフォールバックします。
 
 | ロジック | 生成結果 | 対応 DB テーブルとファイル |
 |---|---|---|
@@ -341,7 +341,7 @@ Detailed selection criteria:
 
 ### 7. Brief Output
 
-Each daily run creates both `rules` and `llm` editions. The rules edition renders the regional section directly. After LLM generation, the same deterministic regional section is inserted or replaced, so the model cannot omit a selected region. An empty LLM result falls back to the rules edition.
+By default, `briefing.use_llm = false` generates and sends only the rules edition while retaining model-based Chinese translation. Setting it to true also generates the llm edition. The rules edition renders the regional section directly. After LLM generation, the same deterministic regional section is inserted or replaced, so the model cannot omit a selected region. An empty LLM result falls back to the rules edition.
 
 | Logic | Generated Result | DB Table and Files |
 |---|---|---|

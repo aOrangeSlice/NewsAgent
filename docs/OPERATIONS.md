@@ -63,11 +63,11 @@ python -m newsagent daily --output-language zh --email
 Daily runs write Markdown files under `data/outbox`:
 
 - `latest_rules.md`: deterministic rules edition.
-- `latest_llm.md`: LLM-written edition.
+- `latest_llm.md`: LLM-written edition, updated only when LLM briefing generation is enabled.
 - `latest.md`: preferred edition selected by `briefing.use_llm`.
 - `briefing_<id>_rules.md` and `briefing_<id>_llm.md`: historical per-run files.
 
-`briefing.use_llm` chooses which edition is written to `latest.md`. It does not disable generation of the other edition.
+`briefing.use_llm: false` (the default) generates only the rules edition. With `true`, both editions are generated and the LLM edition is written to `latest.md`. Existing historical LLM files are retained but are not regenerated or emailed in rules-only mode. Chinese translation remains enabled and still uses the configured model. Cloud deployments can override the setting with `NEWSAGENT_BRIEFING_USE_LLM=false`.
 
 When `--email` is used:
 

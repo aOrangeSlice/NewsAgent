@@ -30,6 +30,7 @@ class CloudConfigTests(TestCase):
                 "NEWSAGENT_LLM_MODEL": "gemini-2.5-flash-lite",
                 "NEWSAGENT_LLM_MAX_CALLS_PER_RUN": "7",
                 "NEWSAGENT_LLM_MAX_OUTPUT_TOKENS": "2048",
+                "NEWSAGENT_BRIEFING_USE_LLM": "false",
                 "NEWSAGENT_EMAIL_ENABLED": "true",
                 "NEWSAGENT_SMTP_USERNAME": "sender@example.com",
                 "NEWSAGENT_EMAIL_RECIPIENTS": "a@example.com, b@example.com",
@@ -42,6 +43,7 @@ class CloudConfigTests(TestCase):
         self.assertEqual(settings["llm"]["provider"], "vertex")
         self.assertEqual(settings["llm"]["max_calls_per_run"], 7)
         self.assertEqual(settings["llm"]["max_output_tokens"], 2048)
+        self.assertFalse(settings["briefing"]["use_llm"])
         self.assertTrue(settings["delivery"]["email"]["enabled"])
         self.assertEqual(
             settings["delivery"]["email"]["recipients"],

@@ -1,10 +1,12 @@
 import unittest
 import uuid
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import call, patch
 
 from newsagent.db import Database
 from newsagent.delivery import resolve_email_password
+from newsagent.llm import Summarizer
 from newsagent.pipeline import NewsAgentApp
 
 
@@ -82,6 +84,50 @@ class EmailVariantTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(len(result["deliveries"]), 1)
         self.assertEqual(result["deliveries"][0]["mode"], "rules")
+
+    def test_rules_only_daily_skips_llm_generation_but_keeps_chinese_translation(self):
+        with TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            self.app.settings = {
+                "database": {"path": str(Path(directory) / "news.db")},
+                "briefing": {"use_llm": False},
+                "translation": {"enabled": True},
+                "llm": {"provider": "ollama", "model": "test-model"},
+            }
+            self.app.db = Database(self.app.settings["database"]["path"])
+            self.app.db.init()
+            self.app.summarizer = Summarizer(self.app.settings)
+            try:
+                with (
+                    patch.object(self.app, "collect", return_value={}),
+                    patch.object(self.app, "_select_stories", return_value=[]),
+                    patch.object(self.app.summarizer.client, "available", return_value=True),
+                    patch.object(
+                        self.app.summarizer.client, "generate",
+                        side_effect=AssertionError("Unexpected LLM briefing generation"),
+                    ) as generate,
+                    patch.object(
+                        self.app.summarizer, "translate_briefing",
+                        return_value=("# Chinese rules brief", "translated"),
+                    ) as translate,
+                    patch.object(self.app, "send_email", return_value={"ok": True}) as send,
+                ):
+                    self.app.daily(output_language="zh", email=True)
+
+                generate.assert_not_called()
+                translate.assert_called_once()
+                self.assertEqual(translate.call_args.args[1], "zh")
+                send.assert_called_once()
+                self.assertIn("[Rules]", send.call_args.kwargs["subject"])
+                rows = self.app.db.conn.execute(
+                    "SELECT generation_mode, translation_status FROM briefings"
+                ).fetchall()
+                self.assertEqual([(r[0], r[1]) for r in rows], [("rules", "translated")])
+                outbox = Path(directory) / "outbox"
+                self.assertTrue((outbox / "latest_rules.md").exists())
+                self.assertTrue((outbox / "latest.md").exists())
+                self.assertFalse((outbox / "latest_llm.md").exists())
+            finally:
+                self.app.db.close()
 
     def test_aggregate_result_is_false_when_one_delivery_fails(self):
         with patch.object(
