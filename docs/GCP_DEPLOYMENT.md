@@ -71,7 +71,8 @@ Acceptance checks:
 - The execution finishes successfully.
 - Logs contain `cloud_state_restored` with `restored=false` on the first run.
 - `newsagent/state/newsagent.db` exists in the bucket.
-- `newsagent/outbox/latest.md`, `latest_rules.md`, and `latest_llm.md` exist.
+- `newsagent/outbox/latest.md` and `latest_rules.md` exist. `latest_llm.md` is
+  generated only when `briefing.use_llm` is enabled.
 - A second manual run logs `restored=true` and a later object generation.
 - Vertex failure does not abort briefing generation; the rules fallback is used.
 
@@ -96,7 +97,8 @@ Redeploy with email enabled but keep Scheduler disabled:
 .\scripts\run_gcp_job.ps1 -ProjectId "YOUR_PROJECT_ID"
 ```
 
-Confirm the expected Rules and LLM messages. SMTP failures mark the Cloud Run
+Confirm the expected Rules message (and an LLM message only if
+`briefing.use_llm` is enabled). SMTP failures mark the Cloud Run
 execution failed only after the database snapshot is safely stored. Automatic
 retries remain disabled to prevent duplicate delivery.
 
@@ -124,6 +126,8 @@ Cloud Run receives configuration through explicit environment variables. The
 important defaults are:
 
 - `/tmp/newsagent/data/newsagent.db`
+- rules-only briefing generation (`briefing.use_llm: false`), with model-based
+  Chinese translation retained; override with `NEWSAGENT_BRIEFING_USE_LLM`
 - `vertex` / `gemini-2.5-flash-lite` / Vertex location `global`
 - 12 model calls per execution
 - 4096 maximum output tokens per call

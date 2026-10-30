@@ -52,18 +52,20 @@ Translation runs only after collection, storage, ranking, and canonical brief
 generation. Raw items and story clusters remain in their source languages.
 `--language` is retained as a compatibility alias for `--output-language`.
 
-Each run saves two editions built from the same selected stories:
+Rules-only output is the default. Setting `briefing.use_llm` to `true` adds an
+LLM-written edition built from the same selected stories:
 
 - `rules`: deterministic edition, equivalent to `use_llm: false`.
 - `llm`: LLM-written edition, equivalent to `use_llm: true`.
 
 The `briefing.use_llm` setting chooses which edition is printed and written to
-`latest.md`. It does not disable generation of the other edition. When a daily
+`latest.md`. With `false`, only the rules edition is generated. When a daily
 run uses `--email`, `use_llm: true` sends two separately labeled messages
 (`[Rules]` and `[LLM]`), while `use_llm: false` sends only the rules edition.
-Both editions are saved in SQLite. Daily runs also write
-`latest_rules.md` and `latest_llm.md`. If the selected output language is not
-`original`, final translation still uses the configured LLM for both editions.
+Generated editions are saved in SQLite. Daily runs also write
+`latest_rules.md` and, when enabled, `latest_llm.md`. If the selected output language is not
+`original`, final translation still uses the configured LLM, including in rules-only mode.
+Cloud deployments can override this setting with `NEWSAGENT_BRIEFING_USE_LLM=false`.
 Long briefs are translated in Markdown-aware chunks. Story IDs and URLs are
 protected during each LLM call, restored afterward, and validated before the
 translated version is accepted.

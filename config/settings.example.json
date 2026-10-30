@@ -24,7 +24,7 @@
   "briefing": {
     "max_stories": 90,
     "min_stories": 8,
-    "use_llm": true,
+    "use_llm": false,
     "lookback_hours": 48,
     "regional_candidate_limit": 100,
     "world_region_limit": 5,
