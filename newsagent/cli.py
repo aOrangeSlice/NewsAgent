@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from .config import DEFAULT_SETTINGS, ROOT, ensure_settings_file, load_settings
@@ -72,7 +73,7 @@ def run_daily_with_logs(
     app: NewsAgentApp,
     args: argparse.Namespace,
     run_id: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     run_id = run_id or uuid4().hex
     emit_pipeline_log(
         app,
@@ -119,6 +120,7 @@ def run_daily_with_logs(
     if email_result is not None:
         email_level = "INFO" if email_result.get("ok") else "ERROR"
         emit_pipeline_log(app, run_id, email_level, "email_finished", **email_result)
+    exit_code = 1 if args.email and email_result is not None and not email_result.get("ok") else 0
     emit_pipeline_log(
         app,
         run_id,
@@ -126,12 +128,13 @@ def run_daily_with_logs(
         "run_finished",
         briefing_id=briefing_id,
         outbox_path=str(path),
-        exit_code=0,
+        exit_code=exit_code,
     )
     return {
         "briefing_id": briefing_id,
         "path": path,
         "email_result": email_result,
+        "exit_code": exit_code,
     }
 
 
@@ -281,7 +284,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"Briefing #{briefing_id}\n")
             print(body)
         elif args.command == "daily":
-            run_daily_with_logs(app, args)
+            result = run_daily_with_logs(app, args)
+            # A requested-but-failed email delivery must be visible to cron/CI
+            # callers, the same way cloud-daily already reports it.
+            exit_code = int(result.get("exit_code") or 0)
+            if exit_code:
+                raise SystemExit(exit_code)
         elif args.command == "send-latest":
             from pathlib import Path
 

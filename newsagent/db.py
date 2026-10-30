@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 import json
 import sqlite3
 
@@ -257,12 +258,16 @@ class Database:
         return destination
 
     def get_unclustered_raw_items(self) -> list[sqlite3.Row]:
+        # ``>=`` (not ``>``): retrieved_at and story_clusters.updated_at are both
+        # stamped at whole-second precision, so an item retrieved in the same
+        # second as the story's last merge was previously skipped forever.
+        # Re-merging is idempotent (urls/item_ids are merged, score keeps max).
         return self.conn.execute(
             """
             SELECT r.*
             FROM raw_items r
             LEFT JOIN story_clusters s ON r.cluster_key = s.cluster_key
-            WHERE s.id IS NULL OR r.retrieved_at > s.updated_at
+            WHERE s.id IS NULL OR r.retrieved_at >= s.updated_at
             ORDER BY r.retrieved_at ASC
             """
         ).fetchall()
@@ -413,7 +418,7 @@ class Database:
             terms = [term for term in query.lower().split() if len(term) > 1]
             if terms:
                 clauses = []
-                for term in terms[:12]:
+                for term in terms:
                     clauses.append("(lower(title) LIKE ? OR lower(summary) LIKE ? OR lower(tags_json) LIKE ? OR lower(source_urls_json) LIKE ?)")
                     like = f"%{term}%"
                     params.extend([like, like, like, like])
@@ -458,7 +463,9 @@ class Database:
         seen: set[str] = set()
         for story in stories:
             source_urls = story.get("source_urls") or []
-            key = source_urls[0] if source_urls else story["cluster_key"]
+            # Dedupe on the outlet (host), not the article URL: two stories from
+            # the same source never collapsed before, so the flag was a no-op.
+            key = source_host(source_urls[0]) if source_urls else story["cluster_key"]
             if key in seen:
                 continue
             seen.add(key)
@@ -530,9 +537,15 @@ class Database:
                 continue
             latest = max(
                 candidates,
-                key=lambda item: item["retrieved_at"] or item["published_at"],
+                key=lambda item: (
+                    item["published_at"] or item["retrieved_at"],
+                    item["retrieved_at"],
+                ),
             )
             story.update(latest)
+            # Keep the freshest retrieval timestamp across the story's items, so
+            # freshness fallbacks still see the most recently fetched article.
+            story["retrieved_at"] = max(item["retrieved_at"] or "" for item in candidates)
 
     def save_briefing(
         self,
@@ -753,6 +766,12 @@ def _json_load(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def source_host(url: str) -> str:
+    """Outlet key for a URL: the host without a leading ``www.``."""
+    host = urlparse(str(url or "")).netloc.lower().removeprefix("www.")
+    return host or str(url or "").strip().lower()
 
 
 def merge_unique_values(existing: list[Any], incoming: list[Any]) -> list[Any]:

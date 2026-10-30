@@ -22,14 +22,22 @@ class YahooQuotesCollector(Collector):
                 params={"range": "5d", "interval": "1d"},
                 verify_ssl=bool(self.source.extra.get("verify_ssl", True)),
             )
-            chart = data.get("chart", {})
-            result = (chart.get("result") or [{}])[0]
-            meta = result.get("meta", {})
-            quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+            chart = data.get("chart") or {}
+            chart_results = chart.get("result") or []
+            if chart.get("error") or not chart_results:
+                # Yahoo answers delisted/unknown symbols with result=None and an
+                # error object; do not turn that into a "None (n/a)" quote.
+                continue
+            result = chart_results[0] or {}
+            meta = result.get("meta") or {}
+            quote = (result.get("indicators") or {}).get("quote") or [{}]
+            quote = quote[0] or {}
             last, previous = latest_and_previous_price(
                 meta,
-                quote.get("close", []),
+                quote.get("close") or [],
             )
+            if last is None:
+                continue
             quote_timestamp = meta.get("regularMarketTime")
             quote_time = timestamp_to_iso(quote_timestamp)
             market_state, next_regular_open = market_session_state(meta)
@@ -75,6 +83,7 @@ def timestamp_to_iso(value) -> str:
 def latest_and_previous_price(meta: dict, closes: list) -> tuple[float | int | None, float | int | None]:
     market_price = meta.get("regularMarketPrice")
     numeric_market_price = market_price if isinstance(market_price, (float, int)) else None
+    closes = closes or []
     numeric_closes = [value for value in closes if isinstance(value, (float, int))]
 
     if numeric_market_price is None:

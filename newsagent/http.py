@@ -19,9 +19,11 @@ def fetch_text(
     backoff_seconds: float = 0.5,
 ) -> str:
     req = request.Request(url, headers={"User-Agent": USER_AGENT})
-    context = None
-    if url.startswith("https://") and not verify_ssl:
-        context = ssl._create_unverified_context()
+    # Build the context regardless of the configured scheme: urlopen decides TLS
+    # from the *final* URL, so an http:// source that redirects to https:// would
+    # otherwise verify certificates even with verify_ssl disabled. urlopen ignores
+    # the context for plain http.
+    context = None if verify_ssl else ssl._create_unverified_context()
     last_error: BaseException | None = None
     for attempt in range(retries + 1):
         try:
