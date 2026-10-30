@@ -245,6 +245,32 @@
     "tags": ["medicine", "health", "journal", "clinical", "nature", "nature_medicine"]
   },
   {
+    "id": "nature_biotechnology",
+    "name": "Nature Biotechnology",
+    "kind": "rss",
+    "category": "medicine",
+    "subcategory": "biotechnology_journal",
+    "region": "global",
+    "url": "https://www.nature.com/nbt.rss",
+    "enabled": true,
+    "tier": 1,
+    "priority": "P0",
+    "tags": ["medicine", "health", "journal", "biotechnology", "biopharma", "protein_engineering", "genomics", "nature"]
+  },
+  {
+    "id": "nature_reviews_drug_discovery",
+    "name": "Nature Reviews Drug Discovery",
+    "kind": "rss",
+    "category": "medicine",
+    "subcategory": "drug_discovery_journal",
+    "region": "global",
+    "url": "https://www.nature.com/nrd.rss",
+    "enabled": true,
+    "tier": 1,
+    "priority": "P0",
+    "tags": ["medicine", "health", "journal", "drug_discovery", "drug_development", "biopharma", "review", "nature"]
+  },
+  {
     "id": "npj_digital_medicine",
     "name": "npj Digital Medicine",
     "kind": "rss",
@@ -681,19 +707,6 @@
     "tier": 1,
     "priority": "P0",
     "tags": ["mainstream", "china", "official", "cgtn", "cctv", "cmg", "youtube", "video", "social"]
-  },
-  {
-    "id": "npr_top_stories",
-    "name": "NPR Top Stories",
-    "kind": "rss",
-    "category": "world_news",
-    "subcategory": "mainstream_media",
-    "region": "us",
-    "url": "https://feeds.npr.org/1001/rss.xml",
-    "enabled": true,
-    "tier": 1,
-    "priority": "P0",
-    "tags": ["mainstream", "us", "world"]
   },
   {
     "id": "nytimes_world",
