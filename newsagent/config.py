@@ -9,7 +9,23 @@ import os
 from .models import Source
 
 
-ROOT = Path(__file__).resolve().parents[1]
+def resolve_root(package_dir: Path | None = None) -> Path:
+    """Where ``config/`` and ``data/`` live.
+
+    ``NEWSAGENT_ROOT`` wins; otherwise a source checkout (the package's parent
+    directory holding ``config/``) is used, and an installed wheel falls back to
+    the current working directory so ``newsagent`` can run anywhere.
+    """
+    override = os.environ.get("NEWSAGENT_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    checkout = (package_dir or Path(__file__).resolve().parent).resolve().parent
+    if (checkout / "config").is_dir():
+        return checkout
+    return Path.cwd()
+
+
+ROOT = resolve_root()
 DEFAULT_SETTINGS = ROOT / "config" / "settings.json"
 DEFAULT_SETTINGS_EXAMPLE = ROOT / "config" / "settings.example.json"
 DEFAULT_SOURCES = ROOT / "config" / "sources.json"

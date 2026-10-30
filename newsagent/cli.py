@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from .config import DEFAULT_SETTINGS, ROOT, ensure_settings_file, load_settings
+from .db import DEFAULT_RETENTION
 from .models import tokyo_now_iso
 from .pipeline import NewsAgentApp
 from .security import scan_for_secrets
@@ -202,6 +203,13 @@ def main(argv: list[str] | None = None) -> None:
     secrets_p = sub.add_parser("secrets-scan", help="Scan local text/config files for likely secrets.")
     secrets_p.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
+    cleanup_p = sub.add_parser(
+        "cleanup",
+        help="Delete rows older than the configured retention windows.",
+    )
+    cleanup_p.add_argument("--dry-run", action="store_true", help="Report what would be deleted.")
+    cleanup_p.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
     brief_p = sub.add_parser("brief", help="Generate a Daily Brief from local stories.")
     brief_p.add_argument(
         "--output-language",
@@ -276,6 +284,24 @@ def main(argv: list[str] | None = None) -> None:
                 print(json.dumps(rows, indent=2, ensure_ascii=False))
             else:
                 print_source_health(rows)
+        elif args.command == "cleanup":
+            retention = {**DEFAULT_RETENTION, **(app.settings.get("retention") or {})}
+            counts = app.db.prune(retention, dry_run=args.dry_run)
+            total = sum(counts.values())
+            if args.json:
+                print(
+                    json.dumps(
+                        {"dry_run": bool(args.dry_run), "total": total, "windows": counts},
+                        indent=2,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                verb = "Would delete" if args.dry_run else "Deleted"
+                print(f"{verb} {total} row(s) across {len(counts)} retention window(s):")
+                for window, count in counts.items():
+                    print(f"- {window}: {count}")
         elif args.command == "brief":
             briefing_id, body = app.brief(
                 output_language=args.output_language,

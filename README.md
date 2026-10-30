@@ -41,6 +41,11 @@ python -m newsagent ask "AIインフラに関する最も重要なトピック�
 `config/settings.example.json` if it does not already exist. Other commands also
 create it automatically on first run. Data is stored in `data/newsagent.db`.
 
+`python -m newsagent` is the same entry point as the installed `newsagent`
+command (`pip install .`); `NEWSAGENT_ROOT` points either one at a directory that
+holds `config/` and `data/`, which is what makes a wheel install usable outside
+this checkout.
+
 Brief output supports four modes:
 
 - `original`: preserve each story in its source language.
@@ -108,6 +113,26 @@ These values can be adjusted in `config/settings.json`:
   }
 }
 ```
+
+A selected story whose category has no dedicated section (policy, general, or a
+medical/AI story beyond the top ten) is listed under `## Other selected stories`
+in the rules edition, so `story_count` always matches what the document shows.
+
+## Retention and cleanup
+
+The `retention` block in `config/settings.json` used to be documentation only.
+`newsagent cleanup` now applies it:
+
+```powershell
+python -m newsagent cleanup --dry-run      # counts only, nothing deleted
+python -m newsagent cleanup                # delete rows past their window
+python -m newsagent cleanup --json         # machine-readable result
+```
+
+Each window is independent (`raw_item_retention_days` excludes market snapshots,
+`market_snapshot_retention_days` covers them, plus stories, briefings, delivery,
+pipeline, source-collection, and LLM-run logs). A window must be a positive whole
+number of days; `0` or a negative value raises instead of deleting everything.
 
 ## Email delivery
 
@@ -216,8 +241,14 @@ Run the automated test suite and local security preflight with:
 
 ```powershell
 python -m unittest discover -s tests -v
+python -m pytest                       # same suite under pytest
 python -m newsagent secrets-scan
+ruff check .                           # E9/F only: real breakage, not style
 ```
+
+Packaging (`pyproject.toml`) is standard: `pip install .` installs the package
+plus the `newsagent` console script, `pip install ".[gcp]"` adds the Google Cloud
+dependencies, and `pip install ".[dev]"` adds pytest and ruff.
 
 Useful project docs:
 

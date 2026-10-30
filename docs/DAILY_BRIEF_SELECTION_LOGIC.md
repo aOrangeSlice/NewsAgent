@@ -102,6 +102,7 @@ python -m newsagent daily --output-language original --email
 7. 如果还没达到 90 条，从剩余候选里按新鲜度和分数补齐。
 8. 明显过旧或历史页面会被剔除，例如特定旧 China Daily/People 页面。
 9. market 不走 48 小时过滤，因为休市时仍应展示最新常规交易收盘数据。
+10. 入选但没有专属板块的条目（policy、general，以及超过 10 条的医疗/AI 条目）会渲染在「其他入选内容」板块，确保 `story_count` 与正文实际显示的条目数一致。
 
 ### 7. 简报输出
 
@@ -218,6 +219,7 @@ python -m newsagent daily --output-language original --email
 7. 90 件に満たない場合は、残り候補から鮮度とスコアで補完する。
 8. 明らかに古い履歴ページは除外する。例：一部の古い China Daily/People ページ。
 9. market は 48 時間フィルタの対象外。休場時も最新の通常取引終値を表示するため。
+10. 専用セクションを持たない選定記事（policy、general、10 件を超える医療/AI 記事など）は「その他の選定記事」セクションに表示され、`story_count` と本文の件数が一致します。
 
 ### 7. ブリーフ出力
 
