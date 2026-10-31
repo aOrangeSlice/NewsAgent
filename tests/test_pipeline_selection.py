@@ -638,7 +638,7 @@ class PipelineSelectionTests(unittest.TestCase):
         ]
 
         body = fallback_briefing(stories, "original")
-        ai_section = body.split("## AI and technology — Top 10", 1)[1].split("## Selection logic", 1)[0]
+        ai_section = body.split("## AI and technology — Top 10", 1)[1].split("## Other selected stories", 1)[0]
 
         self.assertEqual(ai_section.count("- ["), 10)
         self.assertIn("source-b.example", ai_section)
@@ -646,6 +646,11 @@ class PipelineSelectionTests(unittest.TestCase):
             ai_section.index("source-b.example"),
             ai_section.index("source-a.example/ai/1"),
         )
+        # The eleventh AI story is not dropped from the document any more: the
+        # renderer keeps ten in the dedicated section and shows the rest in the
+        # catch-all section below it.
+        leftover_section = body.split("## Other selected stories", 1)[1].split("## Selection logic", 1)[0]
+        self.assertEqual(leftover_section.count("- ["), 1)
 
     def test_world_region_section_diversifies_sources_when_possible(self):
         candidates = [

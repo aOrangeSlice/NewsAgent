@@ -24,23 +24,36 @@ def parse_date(value: str) -> str:
         return value.strip()
 
 
+def element_text(elem: ET.Element) -> str:
+    """Full text of an element, including text inside inline markup."""
+    return "".join(elem.itertext()).strip()
+
+
 def child_text(elem: ET.Element, names: list[str]) -> str:
+    wanted = {name.lower() for name in names}
     for name in names:
         found = elem.find(name)
-        if found is not None and found.text:
-            return found.text.strip()
+        if found is not None:
+            text = element_text(found)
+            if text:
+                return text
     for child in list(elem):
-        local = child.tag.split("}", 1)[-1]
-        if local in names and child.text:
-            return child.text.strip()
+        local = child.tag.split("}", 1)[-1].lower()
+        if local in wanted:
+            text = element_text(child)
+            if text:
+                return text
     return ""
 
 
 def descendant_text(elem: ET.Element, names: list[str]) -> str:
+    wanted = {name.lower() for name in names}
     for child in elem.iter():
-        local = child.tag.split("}", 1)[-1]
-        if local in names and child.text:
-            return child.text.strip()
+        local = child.tag.split("}", 1)[-1].lower()
+        if local in wanted:
+            text = element_text(child)
+            if text:
+                return text
     return ""
 
 
@@ -49,10 +62,35 @@ def children_by_local_name(elem: ET.Element, name: str) -> list[ET.Element]:
 
 
 def link_href(elem: ET.Element) -> str:
+    """The entry's article link.
+
+    Atom feeds may carry several ``link`` elements and the article is the one
+    with ``rel="alternate"`` (or no ``rel`` at all); ``rel="replies"`` points at
+    a comment thread and ``rel="enclosure"`` at a media file, so the first href
+    found is not necessarily the story.
+    """
+    fallback = ""
     for child in elem.iter():
         local = child.tag.split("}", 1)[-1]
-        if local == "link" and child.attrib.get("href"):
-            return child.attrib["href"].strip()
+        if local != "link":
+            continue
+        href = (child.attrib.get("href") or "").strip()
+        if not href:
+            continue
+        rel = (child.attrib.get("rel") or "").strip().lower()
+        if rel in ("", "alternate"):
+            return href
+        if not fallback:
+            fallback = href
+    return fallback
+
+
+def guid_permalink(elem: ET.Element) -> str:
+    """URL from an RSS ``<guid isPermaLink="true">`` (or an Atom ``<id>``)."""
+    for name in ("guid", "id"):
+        value = child_text(elem, [name])
+        if value.lower().startswith(("http://", "https://")):
+            return value
     return ""
 
 
@@ -74,6 +112,8 @@ class RSSCollector(Collector):
             link = child_text(entry, ["link"])
             if not link:
                 link = link_href(entry)
+            if not link:
+                link = guid_permalink(entry)
             summary = child_text(entry, ["description", "summary", "content", "encoded"])
             if not summary:
                 summary = descendant_text(entry, ["description", "summary", "content", "encoded"])

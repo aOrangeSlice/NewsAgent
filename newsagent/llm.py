@@ -40,6 +40,18 @@ LANGUAGE_NAMES = {
     "ja": "Japanese",
 }
 
+# The deterministic market block replaces whichever market heading the model
+# emitted: the prompt asks for the renderer's heading, older prompts (and cached
+# editions) use the free-form one, and both must be collapsed into one section.
+MARKET_SECTION_HEADINGS = (
+    "Market overview: global indices and sectors",
+    "Financial market signals and insights",
+)
+MARKET_SECTION_PATTERN = re.compile(
+    r"^## (?:" + "|".join(re.escape(heading) for heading in MARKET_SECTION_HEADINGS) + r")\s*.*?(?=^## |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
 
 @dataclass
 class BriefingOutput:
@@ -598,7 +610,7 @@ long preamble, explanation, or outer code fence.
 
 Write the briefing around these sections:
 
-## Financial market signals and insights
+## Market overview: global indices and sectors
 Review the available financial indices, sector data, commodities, and FX. Highlight
 the most meaningful movements and useful comparisons. For each insight, explain the
 observed signal, why it may matter based on the evidence, and what to monitor next.
@@ -636,7 +648,7 @@ def build_translation_prompt(
     chunk_index: int = 1,
     chunk_count: int = 1,
 ) -> str:
-    target = LANGUAGE_NAMES[normalize_output_language(output_language)]
+    target = language_display_name(output_language)
     return f"""
 /no_think
 Translate the following completed intelligence briefing into {target}.
@@ -808,11 +820,12 @@ def has_acceptable_briefing_title(text: str) -> bool:
 
 
 def extract_cited_urls(text: str) -> list[str]:
-    # Stop at Markdown link delimiters so [label](known-url) yields the two
-    # actual URL tokens instead of one malformed token spanning the link.
+    # Parentheses and quotes are allowed inside the token because real source
+    # URLs contain them (e.g. Wikipedia's ".../Apple_(company)"); the Markdown
+    # link delimiters around a URL are still dropped by normalize_cited_url.
     return [
         normalize_cited_url(url)
-        for url in re.findall(r"https?://[^\s<>\[\]\(\)\"']+", text or "")
+        for url in re.findall(r"https?://[^\s<>\[\]]+", text or "")
     ]
 
 
@@ -844,8 +857,18 @@ def append_unknown_url_warning(markdown: str, urls: list[str]) -> str:
 
 
 def normalize_cited_url(url: str) -> str:
+    """One normalization for both sides of the citation comparison.
+
+    ``known_source_urls`` and ``extract_cited_urls`` must agree, so every rule
+    lives here: trailing sentence punctuation and unbalanced closers are dropped
+    but balanced parentheses (Wikipedia-style slugs) and the URL itself are kept.
+    """
     cleaned = html.unescape((url or "").strip().strip("<>"))
-    return cleaned.rstrip(".,;:!?)]}）】」』》'\"")
+    while cleaned and cleaned[-1] in ".,;:!?\"'”’）】」』》":
+        cleaned = cleaned[:-1]
+    while cleaned.endswith(")") and cleaned.count("(") < cleaned.count(")"):
+        cleaned = cleaned[:-1]
+    return cleaned
 
 
 def answer_matches_language(text: str, language: str) -> bool:
@@ -871,10 +894,16 @@ def strip_language_neutral_text(text: str) -> str:
     return text
 
 
+def heading_depth(text: str) -> int:
+    """Number of leading ``#`` characters, so deeper headings sort first."""
+    return len(text) - len(text.lstrip("#"))
+
+
 def localize_briefing_structure(markdown: str, language: str) -> str:
     replacements = {
         "zh": {
             "# Daily Brief": "# 每日情报简报",
+            "## Financial market signals and insights": "## 市场先看：全球指数与板块",
             "## Market overview: global indices and sectors": "## 市场先看：全球指数与板块",
             "### Global indices": "### 全球主要指数",
             "### U.S. sectors": "### 美股行业板块",
@@ -884,6 +913,7 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "## Medical and health — Top 10": "## 医疗与健康资讯 Top 10",
             "## AI and technology — Top 10": "## AI 与科技 Top 10",
             "## Selection logic": "## 判断逻辑",
+            "## Other selected stories": "## 其他入选内容",
             "## Sources": "## 来源",
             "### Europe": "### 欧洲",
             "### China": "### 中国",
@@ -900,6 +930,7 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
         },
         "ja": {
             "# Daily Brief": "# デイリー情報ブリーフ",
+            "## Financial market signals and insights": "## 市場概況：世界の指数とセクター",
             "## Market overview: global indices and sectors": "## 市場概況：世界の指数とセクター",
             "### Global indices": "### 世界の主要指数",
             "### U.S. sectors": "### 米国株セクター",
@@ -909,6 +940,7 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
             "## Medical and health — Top 10": "## 医療・ヘルスケア Top 10",
             "## AI and technology — Top 10": "## AI・テクノロジー Top 10",
             "## Selection logic": "## 選定ロジック",
+            "## Other selected stories": "## その他の選定記事",
             "## Sources": "## 情報源",
             "### Europe": "### 欧州",
             "### China": "### 中国",
@@ -925,8 +957,12 @@ def localize_briefing_structure(markdown: str, language: str) -> str:
         },
     }
     result = markdown
-    for source, target in replacements.get(language, {}).items():
-        result = result.replace(source, target)
+    table = replacements.get(language, {})
+    # Apply the most specific heading first: replacing "### China" before
+    # "#### China A-shares" rewrites the deeper heading's prefix and makes its
+    # own entry unreachable.
+    for source in sorted(table, key=lambda key: (heading_depth(key), len(key)), reverse=True):
+        result = result.replace(source, table[source])
     return result
 
 
@@ -995,9 +1031,19 @@ Evidence JSON:
 """.strip()
 
 
+def language_display_name(output_language: str) -> str:
+    """Target language for a prompt, with a named error for untranslatable input."""
+    language = normalize_output_language(output_language)
+    if language not in LANGUAGE_NAMES:
+        raise ValueError(
+            f"language {language!r} has no single target language; "
+            f"choose one of {sorted(LANGUAGE_NAMES)}"
+        )
+    return LANGUAGE_NAMES[language]
+
+
 def build_answer_rewrite_prompt(answer: str, language: str) -> str:
-    language = normalize_output_language(language)
-    target = LANGUAGE_NAMES[language]
+    target = language_display_name(language)
     return f"""
 /no_think
 Rewrite the following answer into {target} only.
@@ -1211,6 +1257,11 @@ def format_local_time(value: datetime, timezone_name: str) -> str:
     return f"{value:%Y-%m-%d %H:%M} {timezone_name}"
 
 
+def other_stories_heading(original: bool) -> list[str]:
+    """Heading lines for the catch-all section of the rules edition."""
+    return ["## Other selected stories" if original else "## 其他入选内容"]
+
+
 def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
     if language != "original":
         language = normalize_output_language(language)
@@ -1269,6 +1320,28 @@ def fallback_briefing(stories: list[dict[str, Any]], language: str) -> str:
         lines.extend(["", "## Earlier coverage / repeat backfill" if original else "## 历史跟进与重复内容补位"])
         for story in repeat_backfill:
             summary = clean_summary(story.get("summary") or ("Previously covered item retained to preserve briefing coverage." if original else "此前已推送的内容，仅在本轮用于补足简报覆盖。"))
+            source_label = "Source:" if original else "来源："
+            lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
+
+    rendered_ids = {int(story["id"]) for story in market}
+    for bucket in select_regional_news(stories).values():
+        rendered_ids.update(int(story["id"]) for story in bucket)
+    rendered_ids.update(int(story["id"]) for story in medical[:10])
+    rendered_ids.update(int(story["id"]) for story in ai_tech)
+    rendered_ids.update(int(story["id"]) for story in repeat_backfill)
+    leftovers = [
+        story
+        for story in stories
+        if int(story["id"]) not in rendered_ids and not is_obviously_stale(story)
+    ]
+    if leftovers:
+        # Selection is allowed to include categories without a dedicated
+        # section (policy, general, extra medical/AI beyond the top ten). They
+        # were counted in story_count but rendered nowhere, so the brief showed
+        # fewer stories than it claimed and repeat suppression hid them later.
+        lines.extend([""] + other_stories_heading(original))
+        for story in leftovers:
+            summary = clean_summary(story.get("summary") or ("Selected for coverage." if original else "因覆盖需要入选。"))
             source_label = "Source:" if original else "来源："
             lines.append(f"- [{story['id']}] {story['title']} — {summary} {source_label} {first_source(story)}")
 
@@ -1364,10 +1437,7 @@ def enforce_deterministic_market_section(markdown: str, stories: list[dict[str, 
         return markdown
 
     section = render_market_overview_section(stories)
-    pattern = re.compile(
-        r"^## Market overview: global indices and sectors\s*.*?(?=^## |\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
+    pattern = MARKET_SECTION_PATTERN
     if pattern.search(markdown):
         return pattern.sub(f"{section}\n\n", markdown, count=1).strip()
 
@@ -1399,10 +1469,7 @@ def enforce_deterministic_regional_news_section(
     if regional_pattern.search(markdown):
         return regional_pattern.sub(f"{section}\n\n", markdown, count=1).strip()
 
-    market_pattern = re.compile(
-        r"^## Market overview: global indices and sectors\s*.*?(?=^## |\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
+    market_pattern = MARKET_SECTION_PATTERN
     market_match = market_pattern.search(markdown)
     if market_match:
         insert_at = market_match.end()
@@ -1420,10 +1487,8 @@ def enforce_deterministic_regional_news_section(
     return f"{section}\n\n{markdown.strip()}".strip()
 
 
-def render_regional_news_section(
-    stories: list[dict[str, Any]],
-    original: bool = True,
-) -> str:
+def select_regional_news(stories: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """World-news stories per region, in render order, capped at five each."""
     world_news = [
         story
         for story in stories
@@ -1431,13 +1496,22 @@ def render_regional_news_section(
         and not story.get("briefing_repeat_backfill")
         and not is_obviously_stale(story)
     ]
+    return {
+        region: [story for story in world_news if story.get("region") == region][:5]
+        for region in WORLD_REGION_ORDER
+    }
+
+
+def render_regional_news_section(
+    stories: list[dict[str, Any]],
+    original: bool = True,
+) -> str:
     lines = [
         "## Important mainstream news by region — Top 5"
         if original
         else "## 各地区主流媒体重要新闻 Top 5"
     ]
-    for region in WORLD_REGION_ORDER:
-        bucket = [story for story in world_news if story.get("region") == region][:5]
+    for region, bucket in select_regional_news(stories).items():
         if not bucket:
             continue
         region_label = WORLD_REGION_LABELS_EN[region] if original else WORLD_REGION_LABELS[region]
@@ -1591,9 +1665,11 @@ def diversify_by_source_domain(stories: list[dict[str, Any]], limit: int) -> lis
 
 
 def source_domain(story: dict[str, Any]) -> str:
-    source = first_source(story)
-    host = urlparse(source).netloc.lower().removeprefix("www.")
-    return host or source.lower() or str(story.get("id", ""))
+    urls = story.get("source_urls") or []
+    if not urls:
+        return str(story.get("id", ""))
+    host = urlparse(urls[0]).netloc.lower().removeprefix("www.")
+    return host or str(urls[0]).lower()
 
 
 def clean_summary(text: str, max_chars: int = 360) -> str:
@@ -1609,11 +1685,12 @@ def first_source(story: dict[str, Any]) -> str:
 
 
 def unique_by_source(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One story per source URL, keeping stories that have no URL at all."""
     result = []
     seen = set()
     for story in stories:
-        source = first_source(story)
-        key = source or story.get("title")
+        urls = story.get("source_urls") or []
+        key = urls[0] if urls else f"story:{story.get('id')}"
         if key in seen:
             continue
         seen.add(key)

@@ -82,7 +82,56 @@ def scan_for_secrets(root: Path) -> list[dict[str, Any]]:
         findings.extend(scan_text(path, root, text))
         if path.suffix.lower() == ".json":
             findings.extend(scan_json_config(path, root, text))
+        elif is_key_value_config(path):
+            # A line already reported for a high-confidence vendor token should
+            # not be reported twice as a generic key/value secret.
+            reported_lines = {finding.line for finding in findings if finding.file == str(path.relative_to(root))}
+            findings.extend(scan_key_value_config(path, root, text, skip_lines=reported_lines))
     return [finding.to_dict() for finding in findings]
+
+
+def is_key_value_config(path: Path) -> bool:
+    """Env files and YAML configs, where a secret can sit in a plain ``key: value``."""
+    return path.name.startswith(".env") or path.suffix.lower() in {".yml", ".yaml"}
+
+
+INLINE_SECRET_LINE = re.compile(r"^(?:-\s*)?(?P<key>[A-Za-z0-9_.-]+)\s*[:=]\s*(?P<value>.+)$")
+
+
+def scan_key_value_config(
+    path: Path,
+    root: Path,
+    text: str,
+    skip_lines: set[int] | None = None,
+) -> list[SecretFinding]:
+    findings: list[SecretFinding] = []
+    skip = skip_lines or set()
+    for index, raw_line in enumerate(text.splitlines(), start=1):
+        if index in skip:
+            continue
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = INLINE_SECRET_LINE.match(line)
+        if not match:
+            continue
+        key = match.group("key").lower()
+        if not any(keyword in key for keyword in SECRET_KEYWORDS):
+            continue
+        if key.endswith("_env"):
+            continue
+        value = match.group("value").strip().strip("\"'")
+        if is_placeholder_secret(value):
+            continue
+        findings.append(
+            SecretFinding(
+                file=str(path.relative_to(root)),
+                line=index,
+                kind="inline_secret_config",
+                detail=f"Config value for {key} should come from an environment variable.",
+            )
+        )
+    return findings
 
 
 def iter_scan_files(root: Path):
@@ -91,7 +140,7 @@ def iter_scan_files(root: Path):
             continue
         if not path.is_file():
             continue
-        if path.suffix.lower() not in TEXT_SUFFIXES and path.name != ".env":
+        if path.suffix.lower() not in TEXT_SUFFIXES and not path.name.startswith(".env"):
             continue
         yield path
 

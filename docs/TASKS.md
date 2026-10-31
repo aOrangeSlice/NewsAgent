@@ -52,17 +52,15 @@ Second-stage experiment:
 1. Add a `web_page` collector for official pages that do not expose RSS.
 2. Add more policy collectors for China, Japan, US, and EU official sources.
 3. Add optional auto-disable or alerting for repeatedly failing sources.
-4. Add a retention cleanup command for old raw items, logs, and LLM telemetry.
-5. Add a simple HTML report output in addition to Markdown.
-6. Add explicit mojibake regression tests for Chinese and Japanese output.
-7. Add more mocked HTTP tests for individual collectors and failure modes.
-8. Decide whether Breaking Alert and Deep Dive are still in scope for this local MVP or should remain roadmap-only.
+4. Add a simple HTML report output in addition to Markdown.
+5. Add explicit mojibake regression tests for Chinese and Japanese output.
+6. Add more mocked HTTP tests for individual collectors and failure modes.
+7. Decide whether Breaking Alert and Deep Dive are still in scope for this local MVP or should remain roadmap-only.
 
 ## Planned but not implemented
 
 - Breaking Alert event monitors.
 - Dedicated Deep Dive workflow.
 - HTML report rendering.
-- Retention cleanup execution.
 - Automatic source disabling.
 - Telegram, LINE, Slack, or enterprise chat delivery.

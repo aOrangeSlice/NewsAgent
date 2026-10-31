@@ -33,7 +33,7 @@ This file records what the local MVP currently does, what is partial, and what r
 | --- | --- | --- |
 | Citation checks | Translation protects URLs and Story IDs; answer generation validates cited URLs in some flows. | There is no standalone complete Citation Verifier for every briefing fact. |
 | `min_stories` | Daily runs can emit a pipeline warning when selected stories are below the threshold. | No alert policy yet. |
-| Retention settings | Retention values exist in configuration. | No cleanup command currently enforces them. |
+| Retention settings | `newsagent cleanup` enforces the `retention` windows (`--dry-run`, `--json`). | No scheduler entry ships with the repo; add `cleanup` to the daily job if disk use matters. |
 | Source health | Source failures are logged and visible in `source-health`. | No automatic disabling or external alerting. |
 | Security checks | SMTP password can be read from an environment variable; `secrets-scan` covers common local leakage patterns. | Not a replacement for a full repository secret-scanning service. |
 | Cloud alerting | Deployment creates an error log metric and attempts to create a Monitoring alert policy. | A notification channel and billing-account permissions must be supplied by the operator. |
@@ -43,7 +43,6 @@ This file records what the local MVP currently does, what is partial, and what r
 - Breaking Alert event monitors.
 - Dedicated Deep Dive workflow.
 - HTML report rendering.
-- Retention cleanup command.
 - Optional source auto-disable after repeated failures.
 - Additional delivery channels such as Telegram, LINE, Slack, or enterprise chat.
 - More official `web_page` collectors for sources without RSS.
