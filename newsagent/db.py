@@ -2,10 +2,53 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from datetime import datetime, timedelta
 import json
 import sqlite3
 
-from .models import NewsItem, tokyo_now_iso
+from .models import TOKYO_TZ, NewsItem, tokyo_now_iso
+
+
+# Retention windows implemented by ``Database.prune``: (setting, table, timestamp
+# column, extra WHERE clause). The setting names are the keys of the documented
+# ``retention`` block in config/settings.example.json.
+RETENTION_WINDOWS = (
+    ("raw_item_retention_days", "raw_items", "retrieved_at", "category <> 'market'"),
+    ("market_snapshot_retention_days", "raw_items", "retrieved_at", "category = 'market'"),
+    ("story_retention_days", "story_clusters", "updated_at", ""),
+    ("briefing_retention_days", "briefings", "created_at", ""),
+    ("delivery_log_retention_days", "delivery_logs", "created_at", ""),
+    ("pipeline_log_retention_days", "pipeline_logs", "created_at", ""),
+    ("source_collection_log_retention_days", "source_collection_logs", "started_at", ""),
+    ("llm_run_retention_days", "llm_runs", "created_at", ""),
+)
+
+# Used when a settings file predates the retention block, so ``cleanup`` does
+# something sane instead of refusing to run. A test keeps this in sync with
+# config/settings.example.json.
+DEFAULT_RETENTION = {
+    "raw_item_retention_days": 90,
+    "story_retention_days": 1095,
+    "briefing_retention_days": 1825,
+    "market_snapshot_retention_days": 1095,
+    "delivery_log_retention_days": 90,
+    "pipeline_log_retention_days": 90,
+    "source_collection_log_retention_days": 90,
+    "llm_run_retention_days": 30,
+}
+
+
+def retention_cutoff(setting: str, days: Any, now: datetime | None = None) -> str:
+    """ISO cutoff (Tokyo time, whole seconds) for a retention window."""
+    try:
+        value = int(days)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"retention.{setting} must be a whole number of days, got {days!r}") from exc
+    if value <= 0:
+        raise ValueError(f"retention.{setting} must be greater than 0, got {value}")
+    moment = now or datetime.now(TOKYO_TZ)
+    return (moment - timedelta(days=value)).replace(microsecond=0).isoformat()
 
 
 SCHEMA = """
@@ -256,13 +299,51 @@ class Database:
             snapshot.close()
         return destination
 
+    def prune(self, retention: dict[str, Any], dry_run: bool = False) -> dict[str, int]:
+        """Delete rows older than the configured retention windows.
+
+        ``retention`` is the ``retention`` block from ``config/settings.json``
+        (see ``DEFAULT_RETENTION``). Returns the number of affected rows per
+        window, keyed ``<table>:<setting>``; with ``dry_run`` nothing is deleted
+        and the counts are what the same call would remove.
+        """
+        counts: dict[str, int] = {}
+        for setting, table, column, extra_where in RETENTION_WINDOWS:
+            if setting not in retention:
+                continue
+            days = retention[setting]
+            if days is None:
+                continue
+            cutoff = retention_cutoff(setting, days)
+            where = f"{column} < ?"
+            if extra_where:
+                where = f"{where} AND {extra_where}"
+            if dry_run:
+                count = self.conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {where}",
+                    (cutoff,),
+                ).fetchone()[0]
+            else:
+                count = self.conn.execute(
+                    f"DELETE FROM {table} WHERE {where}",
+                    (cutoff,),
+                ).rowcount
+            counts[f"{table}:{setting}"] = max(0, int(count))
+        if not dry_run:
+            self.conn.commit()
+        return counts
+
     def get_unclustered_raw_items(self) -> list[sqlite3.Row]:
+        # ``>=`` (not ``>``): retrieved_at and story_clusters.updated_at are both
+        # stamped at whole-second precision, so an item retrieved in the same
+        # second as the story's last merge was previously skipped forever.
+        # Re-merging is idempotent (urls/item_ids are merged, score keeps max).
         return self.conn.execute(
             """
             SELECT r.*
             FROM raw_items r
             LEFT JOIN story_clusters s ON r.cluster_key = s.cluster_key
-            WHERE s.id IS NULL OR r.retrieved_at > s.updated_at
+            WHERE s.id IS NULL OR r.retrieved_at >= s.updated_at
             ORDER BY r.retrieved_at ASC
             """
         ).fetchall()
@@ -413,7 +494,7 @@ class Database:
             terms = [term for term in query.lower().split() if len(term) > 1]
             if terms:
                 clauses = []
-                for term in terms[:12]:
+                for term in terms:
                     clauses.append("(lower(title) LIKE ? OR lower(summary) LIKE ? OR lower(tags_json) LIKE ? OR lower(source_urls_json) LIKE ?)")
                     like = f"%{term}%"
                     params.extend([like, like, like, like])
@@ -458,7 +539,9 @@ class Database:
         seen: set[str] = set()
         for story in stories:
             source_urls = story.get("source_urls") or []
-            key = source_urls[0] if source_urls else story["cluster_key"]
+            # Dedupe on the outlet (host), not the article URL: two stories from
+            # the same source never collapsed before, so the flag was a no-op.
+            key = source_host(source_urls[0]) if source_urls else story["cluster_key"]
             if key in seen:
                 continue
             seen.add(key)
@@ -530,9 +613,15 @@ class Database:
                 continue
             latest = max(
                 candidates,
-                key=lambda item: item["retrieved_at"] or item["published_at"],
+                key=lambda item: (
+                    item["published_at"] or item["retrieved_at"],
+                    item["retrieved_at"],
+                ),
             )
             story.update(latest)
+            # Keep the freshest retrieval timestamp across the story's items, so
+            # freshness fallbacks still see the most recently fetched article.
+            story["retrieved_at"] = max(item["retrieved_at"] or "" for item in candidates)
 
     def save_briefing(
         self,
@@ -753,6 +842,12 @@ def _json_load(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def source_host(url: str) -> str:
+    """Outlet key for a URL: the host without a leading ``www.``."""
+    host = urlparse(str(url or "")).netloc.lower().removeprefix("www.")
+    return host or str(url or "").strip().lower()
 
 
 def merge_unique_values(existing: list[Any], incoming: list[Any]) -> list[Any]:

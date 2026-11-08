@@ -630,6 +630,10 @@ def select_briefing_stories(
             continue
         if category == "world_news":
             region = story.get("region")
+            # The regional passes drop obvious historical pages; the fill pass
+            # must apply the same rule or those pages re-enter here.
+            if is_stale_world_story(story):
+                continue
             if sum(
                 1
                 for item in selected
@@ -652,6 +656,8 @@ def select_briefing_stories(
     for story in sort_by_freshness_and_score(repeat_candidates):
         if repeat_added >= repeat_backfill_limit or len(selected) >= max_stories:
             break
+        if story.get("category") == "world_news" and is_stale_world_story(story):
+            continue
         before = len(selected)
         # Keep repeated stories available to preserve briefing volume, but mark
         # them so renderers do not present them as new items in core sections.

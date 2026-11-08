@@ -5,7 +5,7 @@ from email.utils import parsedate_to_datetime
 import json
 import sqlite3
 
-from .medical import MEDICAL_FOCUS_TERMS
+from .medical import MEDICAL_FOCUS_TERMS, term_matches
 
 
 PRIORITY_WEIGHT = {"P0": 40, "P1": 20, "P2": 5}
@@ -115,7 +115,10 @@ def editorial_position_score(metrics_json: str | None) -> float:
 
 def keyword_importance_score(title: str, summary: str) -> float:
     text = f"{title} {summary}".lower()
-    hits = sum(1 for term in HIGH_IMPACT_TERMS if term in text)
+    # Word-boundary matching for short terms: a bare substring test makes
+    # "ai" match "said", "war" match "software" and "who" match "whole", which
+    # saturates the cap on ordinary prose and stops the signal discriminating.
+    hits = sum(1 for term in HIGH_IMPACT_TERMS if term_matches(term, text))
     return min(hits * 3, 15)
 
 

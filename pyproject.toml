@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "newsagent"
+version = "0.1.0"
+description = "Local-first market, policy, AI, and healthcare intelligence agent."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "aOrangeSlice" }]
+keywords = ["news", "rss", "briefing", "ollama", "local-first"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Sorting",
+]
+# The runtime core is standard-library only. Google Cloud support (cloud-daily,
+# Vertex provider) is imported lazily, so it stays an optional extra here and is
+# still listed in requirements.txt for the container image.
+dependencies = []
+
+[project.optional-dependencies]
+gcp = [
+    "google-cloud-storage>=2.18,<4",
+    "google-genai>=1.0,<2",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+newsagent = "newsagent.cli:main"
+
+[tool.setuptools]
+packages = ["newsagent", "newsagent.collectors"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# The tree has its own formatting style (long f-string sections, assigned
+# lambdas, dunder-heavy scripts); only keep rules that catch real breakage.
+select = ["E9", "F"]
