@@ -65,6 +65,26 @@ MEDICAL_FOCUS_TERMS = [
 
 MEDICAL_RECALL_QUERY = " ".join(MEDICAL_BASE_TERMS + MEDICAL_FOCUS_TERMS)
 
+# Content signals for routing mixed-topic official feeds. Generic AI terms alone
+# must not turn an unrelated model or developer announcement into medical news.
+MEDICAL_CONTENT_TERMS = [
+    "health", "medical", "medicine", "clinical", "hospital", "patient",
+    "disease", "diagnos", "therapeutic", "pharma", "drug discovery",
+    "drug development", "biomedical", "biotechnology", "genomic", "genome",
+    "protein design", "protein structure", "alphafold", "alphagenome",
+    "alphaproteo", "medgemma", "med-gemini", "med-palm", "amie",
+    "co-clinician", "co-scientist", "医疗", "健康", "制药",
+]
+
+
+def is_medical_content(title: str, summary: str = "") -> bool:
+    text = f"{title} {summary}".lower()
+    return any(
+        bool(re.search(r"\bamie\b", text)) if term == "amie" else term_matches(term, text)
+        for term in MEDICAL_CONTENT_TERMS
+    )
+
+
 MEDICAL_STORY_TAGS = {
     "medicine",
     "medical",

@@ -1,4 +1,5 @@
 import unittest
+import gzip
 from urllib import error
 from unittest.mock import patch
 
@@ -24,6 +25,15 @@ class FakeResponse:
 
 
 class HttpRetryTests(unittest.TestCase):
+    def test_decompresses_gzip_feed_before_decoding(self):
+        response = FakeResponse()
+        xml = '<?xml version="1.0"?><rss><channel><title>Health AI</title></channel></rss>'
+        with (
+            patch.object(response, "read", return_value=gzip.compress(xml.encode("utf-8"))),
+            patch("newsagent.http.request.urlopen", return_value=response),
+        ):
+            self.assertEqual(fetch_text("https://example.com/feed.xml"), xml)
+
     def test_retries_transient_url_error(self):
         with patch(
             "newsagent.http.request.urlopen",

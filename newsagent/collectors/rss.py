@@ -6,6 +6,7 @@ import html
 import re
 
 from newsagent.http import fetch_text
+from newsagent.medical import is_medical_content
 
 from .base import Collector, CollectorError
 
@@ -89,15 +90,28 @@ class RSSCollector(Collector):
                 exclude_keywords=self.source.extra.get("exclude_keywords", []),
             ):
                 continue
-            results.append(
-                self.item(
-                    title=clean_title,
-                    url=link,
-                    summary=clean_summary,
-                    published_at=parse_date(published),
-                    metrics={"feed_rank": feed_rank},
-                )
+            classify_medical = bool(self.source.extra.get("classify_medical"))
+            medical_only = bool(self.source.extra.get("medical_only"))
+            medical_content = (
+                is_medical_content(clean_title, clean_summary)
+                if classify_medical or medical_only else False
             )
+            if medical_only and not medical_content:
+                continue
+            item = self.item(
+                title=clean_title,
+                url=link,
+                summary=clean_summary,
+                published_at=parse_date(published),
+                metrics={"feed_rank": feed_rank},
+            )
+            if classify_medical and medical_content:
+                item.category = "medicine"
+                item.subcategory = "official_healthcare_research"
+                item.tags = list(dict.fromkeys(
+                    item.tags + ["medicine", "health", "healthcare", "digital_health"]
+                ))
+            results.append(item)
             if len(results) >= limit:
                 break
         return results

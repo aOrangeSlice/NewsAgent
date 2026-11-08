@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib import error, parse, request
 import json
+import gzip
 import ssl
 import time
 
@@ -27,7 +28,12 @@ def fetch_text(
         try:
             with request.urlopen(req, timeout=timeout, context=context) as resp:
                 charset = resp.headers.get_content_charset() or "utf-8"
-                return resp.read().decode(charset, errors="replace")
+                body = resp.read()
+                # Some feeds (including DeepMind) alternate between plain XML
+                # and gzip responses. urllib does not decompress these for us.
+                if body.startswith(b"\x1f\x8b"):
+                    body = gzip.decompress(body)
+                return body.decode(charset, errors="replace")
         except error.HTTPError as exc:
             last_error = exc
             if exc.code not in RETRYABLE_STATUS_CODES or attempt >= retries:

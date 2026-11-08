@@ -229,6 +229,16 @@ Useful project docs:
 
 Edit `config/sources.json`. Most new RSS/Atom feeds can be added without code changes:
 
+Google Health is enabled as a medical source. Google Labs is subscribed through
+its official blog RSS with `medical_only: true`, so unrelated experiments are
+filtered out (an empty result is normal when no recent medical posts match).
+Google AI, DeepMind and Research use `classify_medical: true`: new articles with
+medical or biopharma signals in their title or feed summary enter the medicine
+section, while other articles retain their AI category. Existing stored articles
+are not reclassified. Terms include MedGemma, AMIE, AlphaFold, AlphaGenome,
+drug discovery, clinical care and genomics. These feeds are official company
+updates, rather than peer-reviewed journal publications.
+
 ```json
 {
   "id": "example_feed",
